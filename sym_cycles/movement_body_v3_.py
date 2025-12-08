@@ -1,56 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MovementBody v3 — Patch v1.2 Dual Track
-=======================================
+movement_body_v3
 
-Dit bestand bevat de VOLLEDIGE aangepaste functies voor MovementBody v3.
-Kopieer deze naar movement_body_v3.py om de dual-track architectuur te activeren.
-
-DUAL TRACK ARCHITECTUUR:
-========================
-
-Track 1: MOTION (bewegings-awareness) — UNSIGNED
-    - Update bij ELKE tile (ook lege tiles)
-    - Houdt bij: tile_index, tijd, unsigned rotaties, rpm
-    - Onafhankelijk van direction lock
-    - Geeft antwoord op: "Is er beweging? Hoe snel?"
-
-Track 2: COMPASS (richting-awareness) — SIGNED
-    - Update alleen bij tiles met stereo-data
-    - Houdt bij: direction, lock_state, signed rotaties
-    - Afhankelijk van direction lock voor sign
-    - Geeft antwoord op: "Welke kant? Hoe zeker?"
-
-SYNTHESE:
-    - theta_deg: unsigned hoek (0-360°) — altijd beschikbaar
-    - theta_signed_deg: signed hoek — alleen na lock
-    - rotations_unsigned: totaal aantal rotaties (altijd positief)
-    - rotations: signed rotaties (kan negatief bij CCW)
-    - awareness_conf: combinatie van motion + compass confidence
-
-WIJZIGINGEN T.O.V. v1.0:
-========================
-
-1. MovementBodyStateV3 dataclass:
-   - Nieuwe velden voor unsigned tracking
-   - tile_span_cycles ondersteuning
-
-2. feed_cycle_node():
-   - Accepteert has_data flag voor lege tiles
-   - Update altijd motion track
-   - Update compass track alleen bij data
-
-3. _update_cycles_and_angle():
-   - Gescheiden unsigned en signed tracking
-   - tile_span_cycles schaling
-
-4. _update_rpm():
-   - Werkt ook voor lege tiles (tijd-gebaseerd)
-
-===========================================================================
-
-Awareness v3 — MovementBody bovenop sym_cycles realtime kompas.
+Awareness v3 â€” MovementBody bovenop sym_cycles realtime kompas.
 
 Integratie met sym_cycles.realtime_compass:
 
@@ -139,7 +92,7 @@ class MovementBodyStateV3:
     # CompassRealtimeState / InertialCompassSnapshot (laatste snapshot)
     compass_global_direction: str = "UNDECIDED"
     compass_global_score_signed: float = 0.0   # ruwe signed score uit InertialCompassState
-    compass_global_score: float = 0.0          # |score| → 0..1 confidence
+    compass_global_score: float = 0.0          # |score| â†’ 0..1 confidence
     compass_window_direction: str = "UNDECIDED"
     compass_window_score: float = 0.0          # window_confidence
     compass_trend: str = "UNKNOWN"
@@ -153,29 +106,6 @@ class MovementBodyStateV3:
     # Effectieve richting voor sign
     direction_global_effective: str = "UNDECIDED"
     direction_global_conf: float = 0.0
-
-    # === v1.2 DUAL TRACK: UNSIGNED MOTION ===
-    # Deze velden worden altijd bijgewerkt, ongeacht direction lock
-
-    tile_index: int = 0                   # huidige tile index
-    tile_span_cycles: float = 0.6         # cycles per tile (configuratie)
-
-    # Unsigned beweging (Track 1: MOTION)
-    cycles_unsigned: float = 0.0          # totaal aantal cycles (altijd positief)
-    rotations_unsigned: float = 0.0       # unsigned rotaties
-    theta_unsigned_deg: float = 0.0       # unsigned hoek 0-360°
-
-    # Motion tracking onafhankelijk van direction
-    motion_active: bool = False           # is er beweging gedetecteerd?
-    motion_start_t_us: Optional[int] = None   # start van huidige beweging
-    motion_tiles_count: int = 0           # aantal tiles in huidige beweging
-
-    # RPM tracking (kan ook zonder direction lock)
-    rpm_unsigned_inst: float = 0.0        # instant rpm (altijd positief)
-    rpm_unsigned_est: float = 0.0         # smoothed rpm (altijd positief)
-
-    # === BESTAANDE SIGNED VELDEN (Track 2: COMPASS) ===
-    # cycle_index, rotations, theta_deg blijven signed
 
     # Cycli & hoek
     cycles_per_rot: float = 12.0        # C_active
@@ -191,8 +121,8 @@ class MovementBodyStateV3:
 
     # Flow / weerstand (window vs locked)
     flow_state: str = "NEUTRAL"         # "FLOW" | "RESIST" | "CHAOTIC" | "NEUTRAL"
-    flow_score: float = 0.0             # 0..1 – hoe lekker het loopt
-    resist_score: float = 0.0           # 0..1 – hoeveel tegenstroom
+    flow_score: float = 0.0             # 0..1 â€“ hoe lekker het loopt
+    resist_score: float = 0.0           # 0..1 â€“ hoeveel tegenstroom
 
     # Bewegingstoestand
     motion_state: str = "STATIC"        # "STATIC" | "EVALUATING" | "MOVING"
@@ -209,7 +139,7 @@ class MovementBodyStateV3:
 
 
 # ---------------------------------------------------------------------------
-# MovementBody v3 – kernklasse
+# MovementBody v3 â€“ kernklasse
 # ---------------------------------------------------------------------------
 
 class MovementBodyV3:
@@ -232,12 +162,12 @@ class MovementBodyV3:
         state = mb.snapshot()
 
     Thresholds tunen
-        inertial global_score typisch ≈ 0.4–0.6,
-        window_confidence ≈ 0.6–1.0 in stabiele fases.
+        inertial global_score typisch â‰ˆ 0.4â€“0.6,
+        window_confidence â‰ˆ 0.6â€“1.0 in stabiele fases.
 
     Die twee getallen zijn feitelijk je natuurlijke schaal. Dus:
-        lock_global_hi ergens ~0.4–0.5,
-        compass_min_conf ≈ 0.25–0.3 is logisch,
+        lock_global_hi ergens ~0.4â€“0.5,
+        compass_min_conf â‰ˆ 0.25â€“0.3 is logisch,
         lock_window_min iets onder typische window_conf (bijv. 0.6).
     """
 
@@ -268,10 +198,8 @@ class MovementBodyV3:
                 # Uitadem logica
                 idle_lock_decay: float = 0.9,
                 idle_unlock_time_us: int = 2_000_000,
-                idle_awareness_floor: float = 0.05,
-                # v1.2: configureerbaar
-                tile_span_cycles: float = 0.6):
-        # Config – algemene
+                idle_awareness_floor: float = 0.05):
+        # Config â€“ algemene
         self.cycles_per_rot_nominal = float(cycles_per_rot)
         self.auto_learn_cycles_per_rot = bool(auto_learn_cycles_per_rot)
         self.rpm_alpha = float(rpm_alpha)
@@ -284,7 +212,7 @@ class MovementBodyV3:
         self.jitter_max_rel = float(jitter_max_rel)
         self.awareness_rpm_norm = float(awareness_rpm_norm)
 
-        # Config – lock
+        # Config â€“ lock
         self.lock_global_hi = float(lock_global_hi)
         self.lock_window_min = float(lock_window_min)
         self.lock_cycles_min = int(lock_cycles_min)
@@ -294,7 +222,7 @@ class MovementBodyV3:
         self.unlock_window_conflict_cycles = int(unlock_window_conflict_cycles)
         self.hard_flip_cycles = int(hard_flip_cycles)
 
-        # Config – flow
+        # Config â€“ flow
         self.flow_hi = float(flow_hi)
         self.resist_hi = float(resist_hi)
 
@@ -302,18 +230,6 @@ class MovementBodyV3:
         self.idle_lock_decay = float(idle_lock_decay)
         self.idle_unlock_time_us = int(idle_unlock_time_us)
         self.idle_awareness_floor = float(idle_awareness_floor)
-
-        # v1.2: Sla tile_span_cycles op
-        self.tile_span_cycles = float(tile_span_cycles)
-
-        # v1.2: Initialiseer state met tile_span_cycles
-        self._state = MovementBodyStateV3(
-            cycles_per_rot=self.cycles_per_rot_nominal,
-            tile_span_cycles=self.tile_span_cycles,  # v1.2
-        )
-
-        # v1.2: Aparte timing voor unsigned tracking
-        self._last_tile_t_us: Optional[int] = None
 
         # Interne state
         self._state = MovementBodyStateV3(
@@ -331,272 +247,6 @@ class MovementBodyV3:
 
         # Idle-cumulatief (voor totale idle-tijd)
         self._idle_start_us: Optional[int] = None
-
-# ===========================================================================
-# NIEUWE METHODE feed_tile() — DE HOOFDINGANG
-# ===========================================================================
-
-    def feed_tile(self,
-                tile: dict,
-                compass_snapshot: dict = None) -> None:
-        """
-        v1.2 DUAL TRACK: Verwerk één tile.
-
-        Deze methode vervangt/wrappet feed_cycle_node() en implementeert
-        de dual-track architectuur.
-
-        Parameters:
-            tile: dict met:
-                - tile_index: int
-                - t_center_us of t_start_us/t_end_us: timestamp
-                - nA, nB: aantal samples (0 = lege tile)
-                - tile_span_cycles: optioneel, override
-
-            compass_snapshot: dict met kompas-data (optioneel)
-                - global_direction, global_score
-                - window_direction, window_confidence
-        """
-        st = self._state
-
-        # Haal tile info
-        tile_index = tile.get("tile_index", 0)
-        t_us = tile.get("t_center_us")
-        if t_us is None:
-            t_start = tile.get("t_start_us", 0)
-            t_end = tile.get("t_end_us", t_start)
-            t_us = int((t_start + t_end) / 2)
-        t_us = int(t_us)
-
-        nA = tile.get("nA", 0)
-        nB = tile.get("nB", 0)
-        has_data = (nA > 0) or (nB > 0)
-
-        tile_span = tile.get("tile_span_cycles", self.tile_span_cycles)
-
-        # Update state
-        st.tile_index = tile_index
-        st.t_us = t_us
-
-        # === TRACK 1: MOTION (altijd, ook lege tiles) ===
-        self._update_motion_track(t_us, tile_span, has_data)
-
-        # === TRACK 2: COMPASS (alleen bij tiles met data) ===
-        if has_data:
-            # Update kompas als snapshot gegeven
-            if compass_snapshot:
-                self.set_compass_realtime(compass_snapshot)
-
-            # Update signed tracking (bestaande logica)
-            self._update_compass_track(t_us, tile_span)
-
-        # === SYNTHESE ===
-        self._update_awareness_conf()
-
-
-    def _update_motion_track(self, t_us: int, tile_span: float, has_data: bool) -> None:
-        """
-        v1.2: Update unsigned motion tracking.
-
-        Dit wordt aangeroepen voor ELKE tile, inclusief lege tiles.
-        Houdt bij:
-        - cycles_unsigned, rotations_unsigned, theta_unsigned_deg
-        - rpm_unsigned_inst, rpm_unsigned_est
-        - motion_active, motion_tiles_count
-        """
-        st = self._state
-        C = st.cycles_per_rot if st.cycles_per_rot > 0 else self.cycles_per_rot_nominal
-
-        # === Unsigned cycles en rotaties ===
-        # Elke tile voegt tile_span cycles toe (ongeacht data)
-        st.cycles_unsigned += tile_span
-        st.rotations_unsigned = st.cycles_unsigned / C
-
-        # Unsigned hoek (0-360°, wrappend)
-        theta_new = (st.rotations_unsigned * 360.0) % 360.0
-        st.theta_unsigned_deg = theta_new
-
-        # === Motion state tracking ===
-        st.motion_tiles_count += 1
-
-        if has_data and not st.motion_active:
-            # Start van beweging gedetecteerd
-            st.motion_active = True
-            st.motion_start_t_us = t_us
-
-        # === RPM tracking (tijd-gebaseerd) ===
-        if self._last_tile_t_us is not None:
-            dt_us = t_us - self._last_tile_t_us
-            if dt_us > 0:
-                dt_s = dt_us * 1e-6
-                # RPM = (cycles per tile) / (tijd per tile in minuten)
-                # = tile_span / (dt_s / 60) / C
-                # = (tile_span * 60) / (dt_s * C)
-                rpm_inst = (tile_span * 60.0) / (dt_s * C)
-
-                st.rpm_unsigned_inst = rpm_inst
-
-                # EMA smoothing
-                if st.rpm_unsigned_est <= 0:
-                    st.rpm_unsigned_est = rpm_inst
-                else:
-                    alpha = self.rpm_alpha
-                    st.rpm_unsigned_est = (1.0 - alpha) * st.rpm_unsigned_est + alpha * rpm_inst
-
-        self._last_tile_t_us = t_us
-
-        # === Motion state update ===
-        # Gebruik unsigned rpm voor motion state als we nog geen lock hebben
-        if st.direction_lock_state == "UNLOCKED":
-            self._update_motion_state_from_unsigned_rpm()
-
-
-    def _update_motion_state_from_unsigned_rpm(self) -> None:
-        """
-        v1.2: Update motion state op basis van unsigned rpm.
-
-        Dit wordt gebruikt VOORDAT we een direction lock hebben.
-        """
-        st = self._state
-        rpm = st.rpm_unsigned_est
-
-        if rpm < self.rpm_slow_thresh:
-            st.motion_state = "STATIC"
-            st.motion_conf = 0.0
-        elif rpm < self.rpm_move_thresh:
-            st.motion_state = "EVALUATING"
-            st.motion_conf = (rpm - self.rpm_slow_thresh) / (self.rpm_move_thresh - self.rpm_slow_thresh)
-        else:
-            st.motion_state = "MOVING"
-            st.motion_conf = 1.0
-
-
-    def _update_compass_track(self, t_us: int, tile_span: float) -> None:
-        """
-        v1.2: Update signed compass tracking.
-
-        Dit wordt alleen aangeroepen voor tiles MET stereo-data.
-        Houdt bij:
-        - cycle_index (signed), rotations (signed), theta_deg
-        - rpm_inst, rpm_est, rpm_jitter
-        - flow_state, resist_score
-        """
-        st = self._state
-
-        # Haal direction sign
-        s = self._direction_sign()
-
-        if s != 0:
-            # We hebben een richting — update signed values
-            self._update_cycles_and_angle_v12(t_us, s, tile_span)
-            self._update_rpm(t_us)
-        else:
-            # Nog geen richting — wacht op lock
-            self._update_motion_state_idle_like()
-
-        # Update flow state (window vs locked direction)
-        self._update_flow_state()
-
-
-    def _update_cycles_and_angle_v12(self, t_us: int, sign: int, tile_span: float) -> None:
-        """
-        v1.2: Update signed cycle tracking met tile_span_cycles schaling.
-
-        Parameters:
-            t_us: timestamp
-            sign: +1 (CW) of -1 (CCW)
-            tile_span: aantal cycles per tile (default 0.6)
-        """
-        st = self._state
-        C = st.cycles_per_rot if st.cycles_per_rot > 0 else self.cycles_per_rot_nominal
-
-        # v1.2: cycle_index += sign * tile_span (niet +1)
-        st.cycle_index += sign * tile_span
-        st.rotations = st.cycle_index / C
-
-        theta_prev = st.theta_deg
-        theta_new = (st.rotations * 360.0) % 360.0
-
-        # Wrap counting voor cumulatieve hoek
-        delta = theta_new - theta_prev
-        if delta > 180.0:
-            st.theta_wrap_count -= 1
-        elif delta < -180.0:
-            st.theta_wrap_count += 1
-
-        st.theta_deg = theta_new
-        st.t_us = t_us
-
-# ===========================================================================
-# AANGEPASTE feed_cycle_node() VOOR BACKWARD COMPATIBILITY
-# ===========================================================================
-
-    def feed_cycle_node_v12(self,
-                            node: dict,
-                            proj_score: float = None) -> None:
-        """
-        v1.2: Aangepaste feed_cycle_node met dual-track ondersteuning.
-
-        Backward compatible met v1.0 interface, maar met v1.2 semantiek:
-        - Leest tile_span_cycles uit node
-        - Leest has_data uit node (of infereert uit nA/nB)
-        - Roept intern feed_tile() aan
-
-        Parameters:
-            node: dict met:
-                - t_center_us: timestamp
-                - tile_index: optioneel
-                - tile_span_cycles: optioneel (default uit config)
-                - nA, nB: optioneel (voor has_data detectie)
-                - has_data: optioneel (expliciet)
-        """
-        # Converteer node naar tile format
-        tile = {
-            "tile_index": node.get("tile_index", 0),
-            "t_center_us": node.get("t_center_us", node.get("t_us", 0)),
-            "nA": node.get("nA", 1),  # default: aanname dat er data is
-            "nB": node.get("nB", 1),
-            "tile_span_cycles": node.get("tile_span_cycles", self.tile_span_cycles),
-        }
-
-        # Check voor expliciete has_data flag
-        if "has_data" in node:
-            if not node["has_data"]:
-                tile["nA"] = 0
-                tile["nB"] = 0
-
-        # Roep nieuwe feed_tile aan
-        self.feed_tile(tile, compass_snapshot=None)
-
-
-    # ===========================================================================
-    # SNAPSHOT UITBREIDING
-    # ===========================================================================
-
-    def snapshot_v12(self) -> dict:
-        """
-        v1.2: Uitgebreide snapshot met dual-track velden.
-        """
-        st = self._state
-        base = self.snapshot()  # bestaande snapshot
-
-        # Voeg v1.2 dual-track velden toe
-        base.update({
-            # Track 1: Motion (unsigned)
-            "tile_index": st.tile_index,
-            "tile_span_cycles": st.tile_span_cycles,
-            "cycles_unsigned": st.cycles_unsigned,
-            "rotations_unsigned": st.rotations_unsigned,
-            "theta_unsigned_deg": st.theta_unsigned_deg,
-            "motion_active": st.motion_active,
-            "motion_tiles_count": st.motion_tiles_count,
-            "rpm_unsigned_inst": st.rpm_unsigned_inst,
-            "rpm_unsigned_est": st.rpm_unsigned_est,
-
-            # Synthese
-            "theta_signed_available": st.direction_lock_state == "LOCKED",
-        })
-
-        return base
 
     # ------------------------------------------------------------------
     # CompassRealtimeState / InertialCompassSnapshot ingest
@@ -637,7 +287,7 @@ class MovementBodyV3:
         gd = gd if gd in ("CW", "CCW", "UNDECIDED") else "UNDECIDED"
         wd = wd if wd in ("CW", "CCW", "UNDECIDED") else "UNDECIDED"
 
-        # global_score is signed (CW=+, CCW=-) → magnitude is confidence
+        # global_score is signed (CW=+, CCW=-) â†’ magnitude is confidence
         try:
             gs_signed = float(gs_signed)
         except (TypeError, ValueError):
@@ -705,7 +355,7 @@ class MovementBodyV3:
 
         st = self._state
 
-        # Als we al locked zijn op dezelfde richting → conf liften
+        # Als we al locked zijn op dezelfde richting â†’ conf liften
         if st.direction_locked_dir == dir_label:
             st.direction_locked_conf = max(st.direction_locked_conf, dir_conf)
         # Als we nog niets locked hebben, kunnen we dit als start gebruiken
@@ -753,7 +403,7 @@ class MovementBodyV3:
         same_dir = gd in ("CW", "CCW") and wd == gd
         opp_dir = gd in ("CW", "CCW") and wd == _opposite_dir(gd)
 
-        # UNLOCKED → SOFT_LOCK
+        # UNLOCKED â†’ SOFT_LOCK
         if st.direction_lock_state == "UNLOCKED":
             if gd in ("CW", "CCW") and gs >= self.lock_global_hi:
                 window_ok = (
@@ -781,7 +431,7 @@ class MovementBodyV3:
                 self._lock_candidate_dir = "UNDECIDED"
                 self._lock_candidate_count = 0
 
-        # SOFT_LOCK → LOCKED of terug
+        # SOFT_LOCK â†’ LOCKED of terug
         elif st.direction_lock_state == "SOFT_LOCK":
             locked_dir = st.direction_locked_dir
             if locked_dir in ("CW", "CCW"):
@@ -808,11 +458,11 @@ class MovementBodyV3:
                     self._conflict_count = 0
                     self._hard_flip_conflict_count = 0
 
-        # LOCKED – monitor tegenstroom/stabiliteit
+        # LOCKED â€“ monitor tegenstroom/stabiliteit
         if st.direction_lock_state == "LOCKED":
             locked_dir = st.direction_locked_dir
 
-            # Stabiliteit valt weg → degrade naar SOFT_LOCK
+            # Stabiliteit valt weg â†’ degrade naar SOFT_LOCK
             if gs < self.unlock_global_lo:
                 st.direction_lock_state = "SOFT_LOCK"
 
@@ -823,7 +473,7 @@ class MovementBodyV3:
             else:
                 self._conflict_count = 0
 
-            # Bij voldoende tegenstroom → terug naar SOFT_LOCK
+            # Bij voldoende tegenstroom â†’ terug naar SOFT_LOCK
             if self._conflict_count >= self.unlock_window_conflict_cycles:
                 st.direction_lock_state = "SOFT_LOCK"
 
@@ -842,7 +492,7 @@ class MovementBodyV3:
         """
         +1 bij CW, -1 bij CCW, 0 bij UNDECIDED of te lage confidence.
 
-        N.B. Dit is de sign voor cycle_index/rotations/θ.
+        N.B. Dit is de sign voor cycle_index/rotations/Î¸.
         RPM zelf blijft fysisch positief.
         """
         st = self._state
@@ -864,7 +514,7 @@ class MovementBodyV3:
                         node: Dict[str, Any],
                         proj_score: Optional[float] = None) -> None:
         """
-        Verwerk één backbone-cycle.
+        Verwerk Ã©Ã©n backbone-cycle.
 
         Vereist:
         - tijdstempel (t_center_us of t_us)
@@ -900,25 +550,21 @@ class MovementBodyV3:
             self._update_awareness_conf()
             return
 
-        # v1.2: Lees tile_span_cycles uit node (default 1.0 voor backward compat)
-        tile_span = float(node.get("tile_span_cycles", 1.0))
         s = self._direction_sign()
 
         if s != 0:
-            self._update_cycles_and_angle(t_us, s, tile_span)  # v1.2: geef tile_span mee
+            self._update_cycles_and_angle(t_us, s)
             self._update_rpm(t_us)
         else:
             self._update_motion_state_idle_like()
 
         self._update_awareness_conf()
 
-    def _update_cycles_and_angle(self, t_us: int, sign: int, tile_span: float = 1.0) -> None:
+    def _update_cycles_and_angle(self, t_us: int, sign: int) -> None:
         st = self._state
         C = st.cycles_per_rot if st.cycles_per_rot > 0 else self.cycles_per_rot_nominal
 
-        # v1.2 FIX: cycle_index schaling met tile_span_cycles
-        # 1 tile = tile_span cycles, dus we tellen tile_span per tile
-        st.cycle_index += sign * tile_span
+        st.cycle_index += int(sign)
         st.rotations = st.cycle_index / C
 
         theta_prev = st.theta_deg
@@ -1056,8 +702,8 @@ class MovementBodyV3:
         """
         Bijwerken van idle-detectie / timeouts als er geen nieuwe cycles zijn.
 
-        - Als dt_idle > idle_timeout_us → rpm langzaam laten loslaten, motion -> richting STATIC.
-        - Na lange idle (idle_unlock_time_us) → lock + rpm + motion volledig naar STILL.
+        - Als dt_idle > idle_timeout_us â†’ rpm langzaam laten loslaten, motion -> richting STATIC.
+        - Na lange idle (idle_unlock_time_us) â†’ lock + rpm + motion volledig naar STILL.
         """
         st = self._state
 
@@ -1083,7 +729,7 @@ class MovementBodyV3:
             st.rpm_est *= decay
             st.rpm_inst *= decay
 
-            # jitter/cadence resetten – we kunnen niet vertrouwen op oude cadence
+            # jitter/cadence resetten â€“ we kunnen niet vertrouwen op oude cadence
             self._rpm_window.clear()
             st.rpm_jitter = 0.0
             st.cadence_ok = False
@@ -1100,7 +746,7 @@ class MovementBodyV3:
                 st.motion_state = "EVALUATING"
                 st.motion_conf = 0.5 * _clamp(st.rpm_est / self.rpm_move_thresh, 0.0, 1.0)
 
-            # Flow neutraliseren – geen actuele tegentrend meer zonder nieuwe tiles
+            # Flow neutraliseren â€“ geen actuele tegentrend meer zonder nieuwe tiles
             st.flow_state = "NEUTRAL"
             st.flow_score = 0.0
             st.resist_score = 0.0
@@ -1177,7 +823,7 @@ class MovementBodyV3:
 
 
 if __name__ == "__main__":
-    # Mini rooktest – integreert met een synthetische "inertial" snapshot
+    # Mini rooktest â€“ integreert met een synthetische "inertial" snapshot
     mb = MovementBodyV3()
 
     # Simuleer een inertiaal snapshot zoals uit InertialCompassState
@@ -1192,7 +838,7 @@ if __name__ == "__main__":
     # Een paar "cycles" met 5 ms tussenruimte (~1000 rpm bij C=12)
     t = 0
     for i in range(12):
-        t += 5000  # µs
+        t += 5000  # Âµs
         mb.feed_cycle_node({"t_center_us": t, "id": i, "cycle_type": "cycle"})
 
     state = mb.snapshot()
