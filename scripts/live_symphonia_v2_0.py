@@ -4,7 +4,7 @@
 live_symphonia_v2_0.py — Live ESP32 met L1 PhysicalActivity + L2 RealtimePipeline
 
 Integreert:
-- L1: PhysicalActivity (IDLE / TENSION / MOVING_RAW)
+- L1: PhysicalActivity (IDLE / TENSION / MOVING_RAW) via canonical l1_physical_activity.py
 - L2: RealtimePipeline v1.9 (Cycles → Tiles → Compass → MovementBody)
 
 L1 is een interpretatielaag BOVENOP L2:
@@ -15,6 +15,11 @@ L1 is een interpretatielaag BOVENOP L2:
 Gebruik:
     python3 live_symphonia_v2_0.py [--port /dev/ttyUSB0] [--profile bench_tolerant]
     python3 live_symphonia_v2_0.py --gap-ms 500 --log
+
+Changelog v2.0.1:
+- VERWIJDERD: Inline L1State, L1Config, L1PhysicalActivity classes (regel 161-259)
+- TOEGEVOEGD: Canonical import van l1_physical_activity module
+- HARMONISATIE: Live en replay gebruiken nu identieke L1 implementatie
 """
 
 import os
@@ -158,105 +163,32 @@ def decode_flags(flags0, flags1):
     }
 
 
-# === L1 PHYSICAL ACTIVITY (inline) ===========================================
+# === L1 PHYSICAL ACTIVITY (canonical import) =================================
+#
+# VERWIJDERD: Inline implementatie van L1State, L1Config, L1PhysicalActivity
+# NU: Canonical import uit l1_physical_activity.py
+#
+# Dit garandeert dat live én replay dezelfde L1 implementatie gebruiken.
 
-class L1State:
-    IDLE = "IDLE"
-    TENSION = "TENSION"
-    MOVING_RAW = "MOVING_RAW"
-
-
-@dataclass
-class L1Config:
-    gap_ms: float = 500.0
-    tension_window_ms: float = 300.0
-    tension_min_events: int = 3
-
-
-class L1PhysicalActivity:
-    """
-    L1 PhysicalActivity Layer — interpreteert fysieke activiteit.
-    
-    Wijzigt NIETS aan L2. Alleen interpretatie.
-    """
-    
-    def __init__(self, config: L1Config = None):
-        self.config = config or L1Config()
-        self._state = L1State.IDLE
-        self._t_last_cycle: Optional[float] = None
-        self._t_last_event: Optional[float] = None
-        self._prev_cycles_total: float = 0.0
-        self._events_without_cycles: int = 0
-    
-    @property
-    def state(self) -> str:
-        return self._state
-    
-    def update(
-        self,
-        wall_time: float,
-        cycles_physical_total: float,
-        events_this_batch: int = 0,
-    ) -> dict:
-        """Update L1 state op basis van L2 data."""
-        
-        delta_cycles = cycles_physical_total - self._prev_cycles_total
-        self._prev_cycles_total = cycles_physical_total
-        
-        # Update timing
-        if delta_cycles > 0:
-            self._t_last_cycle = wall_time
-            self._events_without_cycles = 0
-        
-        if events_this_batch > 0:
-            self._t_last_event = wall_time
-            if delta_cycles == 0:
-                self._events_without_cycles += events_this_batch
-        
-        # Bereken gaps
-        gap_since_cycle_ms = float('inf')
-        if self._t_last_cycle is not None:
-            gap_since_cycle_ms = (wall_time - self._t_last_cycle) * 1000.0
-        
-        gap_since_event_ms = float('inf')
-        if self._t_last_event is not None:
-            gap_since_event_ms = (wall_time - self._t_last_event) * 1000.0
-        
-        # State machine
-        cfg = self.config
-        
-        if delta_cycles > 0:
-            self._state = L1State.MOVING_RAW
-        elif gap_since_cycle_ms < cfg.gap_ms:
-            # Recent cycles - check voor tension
-            if (self._events_without_cycles >= cfg.tension_min_events and 
-                gap_since_event_ms < cfg.tension_window_ms):
-                self._state = L1State.TENSION
-            else:
-                self._state = L1State.MOVING_RAW
-        elif (events_this_batch > 0 or gap_since_event_ms < cfg.tension_window_ms):
-            if self._events_without_cycles >= cfg.tension_min_events:
-                self._state = L1State.TENSION
-            else:
-                self._state = L1State.IDLE
-        else:
-            self._state = L1State.IDLE
-            self._events_without_cycles = 0
-        
-        return {
-            "l1_state": self._state,
-            "gap_since_cycle_ms": gap_since_cycle_ms,
-            "gap_since_event_ms": gap_since_event_ms,
-            "events_without_cycles": self._events_without_cycles,
-            "delta_cycles": delta_cycles,
-        }
-    
-    def reset(self):
-        self._state = L1State.IDLE
-        self._t_last_cycle = None
-        self._t_last_event = None
-        self._prev_cycles_total = 0.0
-        self._events_without_cycles = 0
+try:
+    from sym_cycles.l1_physical_activity import (
+        L1PhysicalActivity,
+        L1Config,
+        L1State,
+    )
+except ImportError:
+    # Fallback: probeer direct uit huidige directory
+    try:
+        from l1_physical_activity import (
+            L1PhysicalActivity,
+            L1Config,
+            L1State,
+        )
+    except ImportError:
+        raise ImportError(
+            "❌ l1_physical_activity.py niet gevonden!\n"
+            "   Zorg dat dit bestand in sym_cycles/ of dezelfde directory staat."
+        )
 
 
 # === TERMINAL UI =============================================================
@@ -313,14 +245,20 @@ def format_display(
     lines.append(f"═══════════════════════════════════════════════════════════════")
     
     # L1 Physical Activity
-    l1_state = l1_snap.get("l1_state", "IDLE")
+    l1_state = l1_snap.get("l1_state", L1State.IDLE)
+    # Handle both enum and string
+    if hasattr(l1_state, 'value'):
+        l1_state_str = l1_state.value
+    else:
+        l1_state_str = str(l1_state)
+    
     gap_cycle = l1_snap.get("gap_since_cycle_ms", float('inf'))
     events_no_cycles = l1_snap.get("events_without_cycles", 0)
     
-    if l1_state == L1State.MOVING_RAW:
+    if l1_state_str == "MOVING_RAW":
         l1_color = ui.GREEN
         l1_icon = "◉"
-    elif l1_state == L1State.TENSION:
+    elif l1_state_str == "TENSION":
         l1_color = ui.YELLOW
         l1_icon = "◎"
     else:
@@ -329,9 +267,9 @@ def format_display(
     
     gap_str = f"{gap_cycle:.0f}ms" if gap_cycle < 10000 else "∞"
     
-    lines.append(f"  {ui.BOLD}L1 Physical:{ui.RESET}  {l1_color}{l1_icon} {l1_state:<12}{ui.RESET} gap={gap_str}")
+    lines.append(f"  {ui.BOLD}L1 Physical:{ui.RESET}  {l1_color}{l1_icon} {l1_state_str:<12}{ui.RESET} gap={gap_str}")
     
-    if l1_state == L1State.TENSION:
+    if l1_state_str == "TENSION":
         lines.append(f"               {ui.YELLOW}↳ events without cycles: {events_no_cycles}{ui.RESET}")
     else:
         lines.append(f"               ")
@@ -429,7 +367,6 @@ def main():
             PROFILE_PRODUCTION = module.PROFILE_PRODUCTION
             PROFILE_BENCH = module.PROFILE_BENCH
             PROFILE_BENCH_TOLERANT = module.PROFILE_BENCH_TOLERANT
-            load_profile_from_xram = module.load_profile_from_xram
         else:
             print("❌ realtime_states_v1_9_canonical.py niet gevonden!")
             print("   Zorg dat dit bestand in dezelfde directory staat.")
@@ -469,7 +406,7 @@ def main():
             cycles_per_rot=l2_profile.cycles_per_rot,
         )
     
-    # Create L1 config
+    # Create L1 config (using canonical L1Config from l1_physical_activity.py)
     l1_config = L1Config(
         gap_ms=args.gap_ms,
         tension_window_ms=args.tension_ms,
@@ -487,7 +424,7 @@ def main():
     # Create components
     fs = FrameStream(ser)
     l2_pipeline = RealtimePipeline(profile=l2_profile)
-    l1_activity = L1PhysicalActivity(config=l1_config)
+    l1_activity = L1PhysicalActivity(config=l1_config)  # Canonical L1!
     
     # Setup logging
     log_file = None
@@ -502,6 +439,7 @@ def main():
     
     print(f"[i] L2 Profile: {l2_profile.name}")
     print(f"[i] L1 Config: gap={args.gap_ms}ms, tension={args.tension_ms}ms")
+    print(f"[i] L1 Source: canonical l1_physical_activity.py")
     print(f"[i] Listening... (Ctrl+C to stop)")
     print()
     
@@ -556,13 +494,22 @@ def main():
                     }
                     log_file.write(json.dumps(log_entry) + "\n")
             
-            # Update L1 (always, even without events)
+            # Update L1 (always, even without events) — using canonical L1PhysicalActivity
             cycles_total = l2_snap.get("total_cycles_physical", 0)
-            l1_snap = l1_activity.update(
+            l1_snap_obj = l1_activity.update(
                 wall_time=now,
                 cycles_physical_total=cycles_total,
                 events_this_batch=events_this_batch,
             )
+            
+            # Convert L1Snapshot to dict for display compatibility
+            l1_snap = {
+                "l1_state": l1_snap_obj.state,
+                "gap_since_cycle_ms": l1_snap_obj.gap_since_cycle_ms,
+                "gap_since_event_ms": l1_snap_obj.gap_since_event_ms,
+                "events_without_cycles": l1_snap_obj.events_without_cycles,
+                "delta_cycles": l1_snap_obj.delta_cycles,
+            }
             
             # Update display
             if now - last_display > 0.1:
@@ -574,12 +521,14 @@ def main():
                     lines = format_display(l1_snap, l2_snap, events_per_sec, elapsed)
                     ui.update(lines)
                 elif args.simple:
-                    l1_state = l1_snap.get("l1_state", "IDLE")
+                    l1_state = l1_snap.get("l1_state", L1State.IDLE)
+                    # Handle enum
+                    l1_state_str = l1_state.value if hasattr(l1_state, 'value') else str(l1_state)
                     rotor = l2_snap.get("rotor_state", "STILL")
                     lock = l2_snap.get("direction_lock_state", "UNLOCKED")
                     rot = l2_snap.get("rotations", 0)
                     
-                    print(f"\r[{elapsed:6.1f}s] L1:{l1_state:12} | L2:{rotor:9}/{lock:10} | "
+                    print(f"\r[{elapsed:6.1f}s] L1:{l1_state_str:12} | L2:{rotor:9}/{lock:10} | "
                           f"rot={rot:+6.2f} | ev/s={events_per_sec:3.0f}   ",
                           end='', flush=True)
                 
@@ -607,7 +556,9 @@ def main():
         print(f"  Total events:    {total_events}")
         print(f"  Total cycles:    {final_l2.get('total_cycles_physical', 0):.0f}")
         print()
-        print(f"  L1 Final:        {l1_snap.get('l1_state', 'IDLE')}")
+        l1_final = l1_snap.get('l1_state', L1State.IDLE)
+        l1_final_str = l1_final.value if hasattr(l1_final, 'value') else str(l1_final)
+        print(f"  L1 Final:        {l1_final_str}")
         print(f"  L2 Final:        {final_l2.get('rotor_state', 'STILL')} / "
               f"{final_l2.get('direction_lock_state', 'UNLOCKED')} / "
               f"{final_l2.get('direction_global_effective', 'UNDECIDED')}")
