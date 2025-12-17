@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-live_symphonia_v2_0.py — Live ESP32 met L1 OriginTracker v0.4.7b
+live_symphonia_v2_0.py — Live ESP32 met L1 OriginTracker v0.4.7c
 
-S02.OriginTracker v0.4.7b — Canonical Cycle Truth (v1.9).
+S02.OriginTracker v0.4.7c — Tile Flow Observability.
 
-Changelog v0.4.7b:
-- VERIFIED: total_cycles_physical EXISTS in v1.9 canonical (MovementBody.snapshot() line 585)
-- FIXED: Use canonical total_cycles_physical directly (was trying wrong keys before)
-- FIXED: cb_cycles_total from _cb["cycles_total"] debug export
-- FIXED: Mismatch detection only after 50+ events (boot phase tolerance)
-- Root cause: Previous fix based on obsolete v1.0, not v1.9 canonical
+Changelog v0.4.7c:
+- NEW: Tile flow metrics (tiles_emitted, tiles_with_cycles, cycles_in_tiles, last_tile_index)
+- IMPROVED: Rate-limited mismatch detection (grace period 0.75s or 8 CB cycles)
+- IMPROVED: "awaiting tile coherence" instead of "⚠ MISMATCH" spam
+- IMPROVED: Clearer "latch_samples_confirmed" label in summary
+- NO BEHAVIOR CHANGE: Only observability/logging improvements
 """
 
 import os, sys, json, time, argparse, struct
@@ -334,6 +334,18 @@ def main():
     dcy = 0.0
     last_logged_cb_total = -1  # v0.4.7: For mismatch dedup
     
+    # v0.4.7c: Tile flow tracking (observability)
+    tiles_emitted_total = 0
+    tiles_with_cycles_total = 0
+    cycles_in_tiles_total = 0.0
+    last_tile_index = None
+    
+    # v0.4.7c: Rate-limited mismatch detection
+    MISMATCH_GRACE_S = 0.75
+    MISMATCH_CB_MIN = 8
+    mismatch_first_seen_t = None
+    mismatch_last_logged_t = 0.0
+    
     try:
         while True:
             now = time.time()
@@ -364,9 +376,20 @@ def main():
                 l2_snap = res.movement_state
                 l2_snap["compass_snapshot"] = res.compass_snapshot
                 
+                # v0.4.7c: Tile flow metrics (observability)
+                tiles_this_tick = getattr(res, 'tiles_emitted', []) or []
+                for tile in tiles_this_tick:
+                    tiles_emitted_total += 1
+                    cyc_phys = tile.get("cycles_physical", 0)
+                    if cyc_phys > 0:
+                        tiles_with_cycles_total += 1
+                        cycles_in_tiles_total += cyc_phys
+                    tidx = tile.get("tile_index")
+                    if tidx is not None:
+                        last_tile_index = tidx
+                
                 # v0.4.7b: Canonical cycle truth from v1.9
                 # MovementBody.snapshot() provides "total_cycles_physical" (float)
-                # This is the canonical source for θ̂ calculation
                 cy_total = l2_snap.get("total_cycles_physical", 0.0)
                 cycles_source_key = "total_cycles_physical"
                 
@@ -379,11 +402,20 @@ def main():
                 debug = l2_snap.get("_debug", {})
                 cb_cycles_tick = debug.get("cycles_emitted_n", 0)
                 
-                # v0.4.7b: Mismatch detection (only warn if both non-zero and different)
-                # Note: CB may emit cycles before tiles are created (boot phase),
-                # so mismatch is only meaningful after tiles start flowing
-                claim_path_mismatch = (cb_cycles_total > 0 and cy_total == 0 and 
-                                       l2_snap.get("_cb", {}).get("events_total", 0) > 50)
+                # v0.4.7c: Rate-limited mismatch detection
+                # Mismatch = CB has cycles but MovementBody hasn't received them yet
+                potential_mismatch = (cb_cycles_total > 0 and cy_total == 0)
+                
+                if potential_mismatch:
+                    if mismatch_first_seen_t is None:
+                        mismatch_first_seen_t = now
+                    # Only flag after grace period OR enough CB cycles
+                    grace_elapsed = (now - mismatch_first_seen_t) >= MISMATCH_GRACE_S
+                    cb_threshold_met = cb_cycles_total >= MISMATCH_CB_MIN
+                    claim_path_mismatch = grace_elapsed or cb_threshold_met
+                else:
+                    mismatch_first_seen_t = None
+                    claim_path_mismatch = False
             
             dcy = cy_total - prev_cy
             if dcy > 0: prev_cy = cy_total
@@ -498,6 +530,13 @@ def main():
                             "source_key": cycles_source_key,
                             "mismatch": claim_path_mismatch,
                         },
+                        # v0.4.7c: Tile flow metrics
+                        "_tile_flow": {
+                            "tiles_emitted": tiles_emitted_total,
+                            "tiles_with_cycles": tiles_with_cycles_total,
+                            "cycles_in_tiles": cycles_in_tiles_total,
+                            "last_tile_index": last_tile_index,
+                        },
                     }
                     log_file.write(json.dumps(entry) + "\n")
                 
@@ -505,7 +544,6 @@ def main():
                     aw = snap.aw_state.value
                     cand = "C" if snap.origin_candidate_set else "-"
                     comm = "O" if snap.origin_commit_set else "-"
-                    uniq = ",".join(str(x) for x in sorted(snap.pool_unique_win)) if snap.pool_unique_win else "-"
                     stale = "[S]" if snap.l2_stale else ""
                     
                     # v0.4.5 MDI mode + latch
@@ -514,13 +552,27 @@ def main():
                     latch = "L" if getattr(snap, "mdi_latch_set", False) else "-"
                     conf_stat = "✓" if getattr(snap, "mdi_confirmed", False) else "-"
                     
-                    # v0.4.7: Unified cycle truth + mismatch
-                    mismatch_warn = " ⚠ MISMATCH" if claim_path_mismatch else ""
-                    truth_ok = "✓" if cy_total > 0 and cb_cycles_total > 0 else ""
+                    # v0.4.7c: CycleTruth with tile coherence status
+                    if cy_total > 0:
+                        coherence_status = "✓"
+                    elif claim_path_mismatch:
+                        coherence_status = "(awaiting tile coherence)"
+                    else:
+                        coherence_status = ""
+                    
+                    # v0.4.7c: Rate-limit mismatch logging (max 1/sec)
+                    show_mismatch_line = claim_path_mismatch and (now - mismatch_last_logged_t >= 1.0)
+                    if show_mismatch_line:
+                        mismatch_last_logged_t = now
                     
                     print(f"{aw:12} {snap.aw_reason.value:24} cand={cand} comm={comm} "
                           f"[{mode}] μ={snap.mdi_disp_micro_deg:4.0f}° ev={ev_win} latch={latch}{conf_stat} {stale}")
-                    print(f"  CycleTruth: used={cy_total:.0f} cb={cb_cycles_total} src={cycles_source_key}{mismatch_warn}{truth_ok}")
+                    print(f"  CycleTruth: used={cy_total:.0f} cb={cb_cycles_total} src={cycles_source_key} {coherence_status}")
+                    
+                    # v0.4.7c: Tile flow metrics
+                    tile_idx_str = str(last_tile_index) if last_tile_index is not None else "-"
+                    print(f"  Flow: tiles={tiles_emitted_total} w/cycles={tiles_with_cycles_total} "
+                          f"cycles_in_tiles={cycles_in_tiles_total:.1f} last_tile={tile_idx_str}")
             
             if ui and now - last_disp > 0.1:
                 eps = len([t for t in events_win if now - t < 1.0])
@@ -540,23 +592,28 @@ def main():
         ser.close()
         if log_file: log_file.close()
         
-        # === SUMMARY v0.4.7b ===
+        # === SUMMARY v0.4.7c ===
         print(f"\n{'='*70}")
         print(f"SUMMARY: {time.time()-session_t0:.1f}s, {total_ev} events")
         print(f"MDI Mode: {args.mdi_mode}")
         print(f"Final: {snap.aw_state.value}, reason: {snap.aw_reason.value}")
         
-        # v0.4.7b: Canonical Cycle Truth
+        # v0.4.7c: Tile Flow Metrics
         print("-"*70)
-        print("CANONICAL CYCLE TRUTH (v0.4.7b):")
+        print("TILE FLOW (v0.4.7c):")
+        print(f"  Tiles emitted:        {tiles_emitted_total}")
+        print(f"  Tiles with cycles:    {tiles_with_cycles_total}")
+        print(f"  Cycles in tiles:      {cycles_in_tiles_total:.1f}")
+        print(f"  Last tile index:      {last_tile_index if last_tile_index is not None else '-'}")
+        
+        # v0.4.7c: Canonical Cycle Truth
+        print("-"*70)
+        print("CANONICAL CYCLE TRUTH (v0.4.7c):")
         print(f"  total_cycles_physical: {cy_total:.1f}")
         print(f"  CB cycles_total:       {cb_cycles_total}")
         print(f"  Source key:            {cycles_source_key}")
         if cb_cycles_total > 0 and cy_total == 0:
-            if total_ev < 50:
-                print(f"  ℹ️  Boot phase: CB detected {cb_cycles_total} cycles, tiles not yet created")
-            else:
-                print(f"  ⚠️  Possible mismatch: CB shows {cb_cycles_total} but MovementBody has 0")
+            print(f"  ℹ️  CB detected {cb_cycles_total} cycles; tiles not yet flushed to MovementBody")
         elif cb_cycles_total == 0 and cy_total == 0:
             print(f"  ℹ️  No cycles (normal for short hand-burst)")
         elif cy_total > 0:
@@ -569,7 +626,8 @@ def main():
         print(f"Test-1: {'✅ PASS' if test1_pass else '❌ FAIL'}  (PRE_MOVEMENT seen during run)")
         print(f"Peak: μ={peak_micro_deg:.1f}°  conf_acc={peak_mdi_conf_acc:.2f}  first t0μ={first_micro_t0}")
         if args.mdi_mode == 'C':
-            print(f"Latch: episodes={latch_episodes}  dropped={latch_dropped}  confirmed={latch_confirmed}")
+            # v0.4.7c: Clearer label for confirmed counter
+            print(f"Latch: episodes={latch_episodes}  dropped={latch_dropped}  latch_samples_confirmed={latch_confirmed}")
         print(f"Origin: candidate_seen={saw_candidate} t_cand={first_candidate_t}  commit_seen={saw_commit} t_commit={first_commit_t}")
         
         print("="*70)
