@@ -16,17 +16,14 @@ import json
 import csv
 import argparse
 from pathlib import Path
+from sym_cycles.realtime_states_v1_9_canonical import (
+    RealtimePipeline, PipelineProfile,
+    PROFILE_PRODUCTION, PROFILE_BENCH, PROFILE_BENCH_TOLERANT,
+    load_profile_from_xram,
+    ROTOR_STATE_STILL, ROTOR_STATE_MOVEMENT,
+    LOCK_STATE_UNLOCKED, LOCK_STATE_SOFT_LOCK, LOCK_STATE_LOCKED,
+)
 
-try:
-    from sym_cycles.realtime_states_v1_9_canonical import (
-        RealtimePipeline, PipelineProfile,
-        PROFILE_PRODUCTION, PROFILE_BENCH, PROFILE_BENCH_TOLERANT,
-        load_profile_from_xram,
-        ROTOR_STATE_STILL, ROTOR_STATE_MOVEMENT,
-        LOCK_STATE_UNLOCKED, LOCK_STATE_SOFT_LOCK, LOCK_STATE_LOCKED,
-    )
-except ImportError:
-    exec(open("/mnt/user-data/outputs/realtime_states_v1_9_canonical.py").read())
 
 
 def main():

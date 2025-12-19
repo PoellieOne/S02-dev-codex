@@ -8,3 +8,11 @@ venv/
 .idea/
 .vscode/
 .DS_Store
+# testbench artifacts
+testbench/logs/
+testbench/out/
+testbench/data/
+testbench/**/*.log
+testbench/**/*.csv
+testbench/**/*.jsonl
+testbench/**/__pycache__/
