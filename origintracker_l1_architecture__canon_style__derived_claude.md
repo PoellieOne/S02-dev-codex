@@ -1,17 +1,33 @@
 > NON-CANON / DERIVED / CODE-ANCHORED
-> Scope: OriginTracker (L1) via l1_physical_activity.py (+ live_symphonia_v2_0.py voor call-site)
+> Scope: OriginTracker (functioneel L1.5, geïmplementeerd via L1PhysicalActivity + live_symphonia_v2_0.py voor call-site)
 > Bronpad: /home/ralph/PoellieOne/S02-dev-codex
 
 # OriginTracker L1 Architecture — Derived Document
 
-**Versie:** v0.4.5 (code-afgeleid)
+**Versie:** afgeleid van OriginTracker v0.4.7c (code-derived)
+**Status:** afgeleid document — diagnostisch / beschrijvend
+⚠ Dit document beschrijft waargenomen code-gedrag.
+Het stelt geen nieuwe claims vast en vervangt geen canonieke architectuurdocumenten.
+
 **Scope:** L1PhysicalActivity klasse + MDI modes
+NB: Hoewel de implementatie zich in L1-modules bevindt,
+functioneert OriginTracker architectonisch als L1.5
+(pre-cycle displacement & origin detectie).
+
+**Claim-safety:**
+
+- Geen absolute θ-claims
+- Geen LOCKED-claims
+- Cycles en rotatie-indicatoren zijn diagnostisch
 
 ---
 
 ## 1. Doel en afbakening
 
-**Wat je hier leert:** OriginTracker detecteert beweging voordat cycles beschikbaar zijn. Het vertaalt pool-transities naar een awareness-state die van STILL naar MOVEMENT loopt.
+**Wat je hier leert:** OriginTracker detecteert beweging voordat cycles beschikbaar zijn. Het vertaalt pool-transities naar een awareness-state. De awareness-state kent transitions tussen STILL, PRE_MOVEMENT,
+PRE_ROTATION en MOVEMENT, met mogelijke terugval
+(bijv. STOP_GAP_TIMEOUT of CANDIDATE_DROPPED).
+Dit gedrag is verwacht en regime-afhankelijk.
 
 ### Doel (in code zichtbaar)
 
@@ -21,7 +37,7 @@ OriginTracker is onderdeel van `L1PhysicalActivity` en biedt:
 - **Two-phase origin tracking** (candidate → commit)
 - **Awareness state machine** met vijf states
 
-CODE-EVIDENCE: `class L1PhysicalActivity` in `l1_physical_activity.py` (regel 198)
+CODE-EVIDENCE: `class L1PhysicalActivity` in `l1_physical_activity.py`
 
 ### Buiten scope
 
@@ -37,18 +53,18 @@ CODE-EVIDENCE: `class L1PhysicalActivity` in `l1_physical_activity.py` (regel 19
 
 | Term | Betekenis | Code-evidence |
 |------|-----------|---------------|
-| **AwState** | Awareness state enum (STILL/NOISE/PRE_MOVEMENT/PRE_ROTATION/MOVEMENT) | `class AwState(Enum)` regel 28-34 |
-| **AwReason** | Reden voor state-transitie (MDI_TRIGGER, CANDIDATE_POOL, etc.) | `class AwReason(Enum)` regel 35-57 |
-| **MDI** | Micro-Displacement Integrator — pre-cycle verplaatsingsdetectie | `_process_mdi_step()` regel 255-273 |
-| **mdi_micro_acc** | Accumulator voor micro-stappen (float, max 36.0) | `self._mdi_micro_acc` regel 213, 270 |
-| **mdi_conf_acc** | EMA-smoothed confidence score | `_update_mdi_conf_acc()` regel 302-310 |
-| **theta_hat_rot** | Geschatte rotatie in rotaties (cycles/cycles_per_rot) | `self._theta_hat_rot` regel 445 |
-| **pool window** | Sliding window (250ms) voor pool-evidence | `self._pool_window: deque` regel 211 |
-| **origin_candidate_set** | Boolean: pool-evidence voldoende voor kandidaat | `self._origin_candidate_set` regel 228 |
-| **origin_commit_set** | Boolean: angle-displacement bevestigd | `self._origin_commit_set` regel 230 |
-| **disp_acc_deg** | Geaccumuleerde hoekverplaatsing in graden | `self._disp_acc_deg` regel 232 |
-| **gap** | Tijd sinds laatste event/cycle (ageE_s, ageC_s) | Berekend in `update()` regel 454-455 |
-| **latch** | Mode C fast-start mechanisme | `self._mdi_latch_set` regel 221 |
+| **AwState** | Awareness state enum (STILL/NOISE/PRE_MOVEMENT/PRE_ROTATION/MOVEMENT) | `class AwState(Enum)` |
+| **AwReason** | Reden voor state-transitie (MDI_TRIGGER, CANDIDATE_POOL, etc.) | `class AwReason(Enum)` |
+| **MDI** | Micro-Displacement Integrator — pre-cycle verplaatsingsdetectie | `_process_mdi_step()` |
+| **mdi_micro_acc** | Teller in micro-steps (0..36) | `self._mdi_micro_acc` |
+| **mdi_conf_acc** | EMA-smoothed confidence score | `_update_mdi_conf_acc()`  |
+| **theta_hat_rot** | afgeleide rotatie-indicator (diagnostisch), berekend uit ontvangen cycles. Dit veld representeert geen absolute rotorhoek en is alleen betekenisvol bij coherente downstream cycles. | `self._theta_hat_rot` |
+| **pool window** | Sliding window (250ms) voor pool-evidence | `self._pool_window: deque`  |
+| **origin_candidate_set** | Boolean: pool-evidence voldoende voor kandidaat | `self._origin_candidate_set` |
+| **origin_commit_set** | Boolean: angle-displacement bevestigd | `self._origin_commit_set` |
+| **disp_acc_deg** | Geaccumuleerde hoekverplaatsing in graden | `self._disp_acc_deg`  |
+| **gap** | Tijd sinds laatste event/cycle (ageE_s, ageC_s) | Berekend in `update()` |
+| **latch** | Mode C fast-start mechanisme | `self._mdi_latch_set` |
 
 **Hoe herken je dit in logs:** Zoek naar `aw_state`, `aw_reason`, `mdi_micro_acc`, `mdi_conf_acc` in JSONL output.
 
@@ -60,7 +76,7 @@ CODE-EVIDENCE: `class L1PhysicalActivity` in `l1_physical_activity.py` (regel 19
 
 ### record_pool() — Per event
 
-CODE-EVIDENCE: `def record_pool(self, to_pool, sensor: int, t_s: float = None)` regel 243
+CODE-EVIDENCE: `def record_pool(self, to_pool, sensor: int, t_s: float = None)`
 
 **Parameters:**
 - `to_pool`: int (0=NEU, 1=N, 2=S, 3=invalid)
@@ -73,19 +89,22 @@ CODE-EVIDENCE: `def record_pool(self, to_pool, sensor: int, t_s: float = None)` 
 
 ### update() — Per tick
 
-CODE-EVIDENCE: `def update(self, wall_time: float, cycles_physical_total: float, events_this_batch: int = 0, ...)` regel 433
+CODE-EVIDENCE: `def update(self, wall_time: float, cycles_physical_total: float, events_this_batch: int = 0, ...)`
 
 **Verplichte parameters:**
+
 - `wall_time`: huidige tijd in seconden
 - `cycles_physical_total`: cumulatieve cycles van L2
 - `events_this_batch`: aantal events sinds laatste update
 
 **Optionele parameters:**
+
 - `direction_conf`: richting-confidence van L2
 - `lock_state`: lock status ("UNLOCKED"/"SOFT_LOCK"/"LOCKED")
 - `direction_effective`: effectieve richting ("CW"/"CCW"/"UNDECIDED")
 
-**Call-site voorbeeld** (live_symphonia_v2_0.py regel 430-431):
+**Call-site voorbeeld** (live_symphonia_v2_0.py):
+
 ```python
 snap = l1.update(wall_time=now, cycles_physical_total=cy_total, events_this_batch=ev_batch,
                  direction_conf=dc, lock_state=lk, direction_effective=de)
@@ -101,19 +120,19 @@ snap = l1.update(wall_time=now, cycles_physical_total=cy_total, events_this_batc
 
 ### AwState (primair)
 
-CODE-EVIDENCE: `class AwState(Enum)` regel 28-34
+CODE-EVIDENCE: `class AwState(Enum)`
 
 | State | Betekenis | Trigger sources (code) |
 |-------|-----------|------------------------|
-| STILL | Geen activiteit | `activity_score < activity_threshold_low` (regel 596), gap timeout (regel 489-491) |
-| NOISE | Activiteit zonder verplaatsing | `activity_score >= activity_threshold_low` (regel 595) |
-| PRE_MOVEMENT | MDI detecteert micro-verplaatsing | MDI trigger/latch (regel 509-510) |
-| PRE_ROTATION | Pool-evidence kandidaat gezet | `origin_candidate_set` (regel 593), commit zonder movement (regel 592) |
-| MOVEMENT | Bevestigde beweging | `disp_from_origin_deg >= movement_confirm_deg` (regel 589), speed confirm (regel 590), lock (regel 591) |
+| STILL | Geen activiteit | `activity_score < activity_threshold_low`, gap timeout |
+| NOISE | Activiteit zonder verplaatsing | `activity_score >= activity_threshold_low` |
+| PRE_MOVEMENT | MDI detecteert micro-verplaatsing | MDI trigger/latch |
+| PRE_ROTATION | Pool-evidence kandidaat gezet | `origin_candidate_set`, commit zonder movement |
+| MOVEMENT | Bevestigde beweging | `disp_from_origin_deg >= movement_confirm_deg`, speed confirm, lock |
 
 ### AwReason (trigger context)
 
-CODE-EVIDENCE: `class AwReason(Enum)` regel 35-57
+CODE-EVIDENCE: `class AwReason(Enum)`
 
 Belangrijke reasons:
 - `MDI_TRIGGER` / `MDI_LATCH`: MDI heeft beweging gedetecteerd
@@ -123,11 +142,12 @@ Belangrijke reasons:
 
 ### L1State (secundair, tactiel)
 
-CODE-EVIDENCE: `class L1State(Enum)` regel 59-64
+CODE-EVIDENCE: `class L1State(Enum)`
 
 States: STILL, FEELING, SCRAPE, DISPLACEMENT, MOVING
 
-INFERENTIE: L1State lijkt een legacy/parallel systeem; AwState is de primaire awareness output.
+INFERENTIE: L1State lijkt secundair t.o.v. AwState;
+de huidige runner gebruikt primair AwState voor beslissingen.
 
 **Hoe herken je dit in logs:** `aw.state` en `aw.reason` in JSONL; `l1.state` voor tactiele state.
 
@@ -139,11 +159,11 @@ INFERENTIE: L1State lijkt een legacy/parallel systeem; AwState is de primaire aw
 
 ### Interne accumulators (L1PhysicalActivity)
 
-CODE-EVIDENCE: `__init__` regel 201-236
+CODE-EVIDENCE: `__init__`
 
 | Veld | Type | Doel |
 |------|------|------|
-| `_mdi_micro_acc` | float | Geaccumuleerde micro-stappen (0..36) |
+| `_mdi_micro_acc` | float | Teller in micro-steps (0..36) |
 | `_mdi_tremor_score` | float | Flipflop-penalty (0..1) |
 | `_mdi_conf_acc` | float | EMA-smoothed confidence |
 | `_mdi_window` | deque | Sliding window voor MDI stats |
@@ -157,25 +177,28 @@ CODE-EVIDENCE: `__init__` regel 201-236
 
 ### L1Snapshot output velden
 
-CODE-EVIDENCE: `@dataclass class L1Snapshot` regel 133-193
+CODE-EVIDENCE: `@dataclass class L1Snapshot`
 
 **MDI velden:**
+
 - `mdi_mode`: str — actieve mode ("A"/"B"/"C")
 - `mdi_ev_win`: int — events in MDI window
-- `mdi_micro_acc`: float — accumulator waarde
-- `mdi_disp_micro_deg`: float — micro_acc × step_size
+- `mdi_micro_acc`: float — teller in micro-steps (0..36)
+- `mdi_disp_micro_deg`: float — afgeleide hoek, berekend via step_size (interpretatie afhankelijk van ingestelde mode).
 - `mdi_conf` / `mdi_conf_acc` / `mdi_conf_used`: float — confidence scores
 - `mdi_tremor_score`: float — flipflop indicator
 - `micro_t0_s`: Optional[float] — eerste micro-displacement timestamp
 - `mdi_latch_set` / `mdi_confirmed`: bool — latch state (Mode C)
 
 **Origin velden:**
+
 - `origin_candidate_set` / `origin_commit_set`: bool
 - `origin_time0_s`: Optional[float] — vroegste bewegingstijd
 - `origin_time_s`: Optional[float] — commit tijd
 - `origin_theta_deg`: Optional[float] — origin hoek
 
 **Displacement velden:**
+
 - `disp_acc_deg`: float — totale accumulatie
 - `disp_from_origin_deg`: float — verplaatsing sinds commit
 - `speed_deg_s`: float — huidige snelheid
@@ -191,47 +214,47 @@ CODE-EVIDENCE: `@dataclass class L1Snapshot` regel 133-193
 
 ### Per tick (update() flow)
 
-CODE-EVIDENCE: `def update()` regel 433-584
+CODE-EVIDENCE: `def update()`
 
-1. **Time delta berekening** (regel 437-439)
+1. **Time delta berekening**
    - `dt_s` = now - last_update
    - Hard reset als `dt_s > hard_reset_s`
 
-2. **Cycle/event accounting** (regel 441-452)
+2. **Cycle/event accounting**
    - `delta_cycles` = nieuwe - vorige cycles
    - Update `t_last_cycle_s` en `t_last_event_s`
 
-3. **Age berekening** (regel 454-456)
+3. **Age berekening**
    - `ageE_s` = tijd sinds laatste event
    - `ageC_s` = tijd sinds laatste cycle
 
-4. **Activity/encoder decay** (regel 462-467)
+4. **Activity/encoder decay**
    - Exponentieel verval van `activity_score`
    - `encoder_conf` update op basis van cycles/events
 
-5. **MDI stats berekening** (regel 472-478)
+5. **MDI stats berekening**
    - `_compute_pool_stats()` voor pool window
    - `_compute_mdi_stats()` voor MDI window
    - `_compute_mdi_conf()` voor confidence
    - Step size bepalen via `_get_step_size()`
 
-6. **MDI mode evaluatie** (regel 480-483)
+6. **MDI mode evaluatie**
    - `_apply_mdi_mode()` retourneert (triggered, reason)
    - Alleen als tremor <= threshold
 
-7. **Gap handling** (regel 488-514)
+7. **Gap handling**
    - Hard gap: volledige reset
    - Soft gap: origin reset, MDI behouden (als niet actief)
    - Hold decay: speed × 0.9
 
-8. **Origin candidate/commit logic** (regel 516-547)
+8. **Origin candidate/commit logic**
    - Pool evidence check voor candidate
    - Angle threshold + horizon voor commit
 
-9. **AwState berekening** (regel 560)
+9. **AwState berekening**
    - `_compute_aw()` bepaalt finale state/reason
 
-10. **Snapshot constructie** (regel 567-584)
+10. **Snapshot constructie**
     - Alle velden verzameld in `L1Snapshot`
 
 **Hoe herken je dit in logs:** De volgorde van velden in JSONL weerspiegelt deze flow: eerst ages, dan mdi, dan candidate/commit, dan aw.
@@ -244,7 +267,7 @@ CODE-EVIDENCE: `def update()` regel 433-584
 
 ### Reset triggers
 
-CODE-EVIDENCE: `_reset_origin()` regel 406-431
+CODE-EVIDENCE: `_reset_origin()`
 
 | Trigger | Conditie | keep_tactile | reset_mdi |
 |---------|----------|--------------|-----------|
@@ -256,7 +279,7 @@ CODE-EVIDENCE: `_reset_origin()` regel 406-431
 
 ### MDI active guard (v0.4.5)
 
-CODE-EVIDENCE: regel 486
+CODE-EVIDENCE:
 
 ```python
 mdi_active = mdi_triggered or self._mdi_latch_set or self._aw_state == AwState.PRE_MOVEMENT
@@ -266,7 +289,7 @@ Dit voorkomt dat een cycle-gap (NO_DISP_ACTIVE) de MDI-state wist terwijl PRE_MO
 
 ### Gap config defaults
 
-CODE-EVIDENCE: `L1Config` regel 128-131
+CODE-EVIDENCE: `L1Config`
 
 - `stop_gap_s`: 0.80 (hard reset threshold)
 - `noise_gap_s`: 0.50 (soft reset threshold)
@@ -283,19 +306,22 @@ CODE-EVIDENCE: `L1Config` regel 128-131
 
 ### Phase 1: Candidate (pool evidence)
 
-CODE-EVIDENCE: regel 519-526
+CODE-EVIDENCE:
 
 **Trigger conditie:**
+
 ```python
 strong = pool_chg >= pool_changes_min and len(valid_pools) >= pool_unique_min and pool_vr >= pool_valid_rate_min
 ```
 
 **Defaults:**
+
 - `pool_changes_min`: 2
 - `pool_unique_min`: 2
 - `pool_valid_rate_min`: 0.70
 
 **Bij trigger:**
+
 - `origin_candidate_set = True`
 - `origin_candidate_time_s = now_s`
 - `origin_time0_s = micro_t0_s or now_s` (prefer MDI timestamp)
@@ -303,24 +329,29 @@ strong = pool_chg >= pool_changes_min and len(valid_pools) >= pool_unique_min an
 
 ### Phase 2: Commit (angle displacement)
 
-CODE-EVIDENCE: regel 531-547
+CODE-EVIDENCE:
 
 **Trigger conditie:**
-1. `abs(disp_acc_deg) >= origin_step_deg` (default: 30°)
+
+1. De `abs(disp_acc_deg) >= origin_step_deg` (default: 30°)
 2. Start horizon timer
 3. Wacht `origin_commit_horizon_s` (default: 0.35s)
 4. Check rebound: als `abs(disp_acc_deg) < origin_rebound_eps_deg` (default: 10°) → reset horizon
 
 **Bij commit:**
+
 - `origin_commit_set = True`
 - `origin_time_s = now_s`
 - `origin_theta_hat_rot = theta_hat_rot - disp_acc_deg/360`
+NB: Dit is interne boekhouding voor relatieve origin-ankering.
+De geldigheid hangt af van upstream cycle-integriteit
+en vormt geen absolute fysische referentie.
 - `origin_conf = 0.6`
 - `aw_reason = COMMIT_ANGLE`
 
 ### Timeline prioriteit
 
-CODE-EVIDENCE: regel 524, 543
+CODE-EVIDENCE:
 
 `origin_time0_s` wordt gezet als de **vroegste** van:
 1. `micro_t0_s` (MDI eerste detectie)
@@ -339,7 +370,7 @@ Dit zorgt dat de "echte start" altijd het eerste loskomen vastlegt.
 
 ### Diagnostic velden in L1Snapshot
 
-CODE-EVIDENCE: `L1Snapshot` regel 133-193
+CODE-EVIDENCE: `L1Snapshot`
 
 | Veld | Doel |
 |------|------|
@@ -352,9 +383,10 @@ CODE-EVIDENCE: `L1Snapshot` regel 133-193
 
 ### Runner logging (live_symphonia_v2_0.py)
 
-CODE-EVIDENCE: `live_symphonia_v2_0.py` regel 472-541
+CODE-EVIDENCE: `live_symphonia_v2_0.py`
 
 De runner schrijft JSONL met:
+
 - `t_s`: elapsed time
 - `ev`: events dit tick
 - `cy`: totale cycles
@@ -365,9 +397,10 @@ De runner schrijft JSONL met:
 
 ### Scoreboard output
 
-CODE-EVIDENCE: regel 543-575
+CODE-EVIDENCE:
 
 In scoreboard mode print de runner:
+
 ```
 PRE_MOVEMENT MDI_TRIGGER             cand=- comm=- [C] μ=  25° ev=4 latch=L✓
   CycleTruth: used=0 cb=0 src=total_cycles_physical
