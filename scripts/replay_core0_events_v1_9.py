@@ -161,10 +161,10 @@ def main():
                 "is_pure_stereo": tile.get("is_pure_stereo", False),
                 "cycles_physical": cycles_physical,
                 
-                "compass_global_direction": cs.global_direction if cs else "",
+                "compass_global_direction": cs.direction if cs else "",
                 "compass_global_score": cs.global_score if cs else 0,
-                "compass_window_direction": cs.window_direction if cs else "",
-                "compass_window_score": cs.window_confidence if cs else 0,
+                "compass_window_direction": cs.direction if cs else "",
+                "compass_window_score": cs.conf if cs else 0,
                 
                 # v1.9: Hiërarchische state
                 "rotor_state": mv.get("rotor_state", "STILL"),
@@ -199,38 +199,10 @@ def main():
             rows.append(row)
     
     # Finalize
-    final_tiles = pipeline.tiles_state.finalize()
-    if final_tiles:
-        final_snap = pipeline.snapshot()
-        for tile in final_tiles:
-            cycles_physical = tile.get("cycles_physical", 0)
-            if cycles_physical <= 0:
-                continue
-            
-            mv = final_snap.movement_state
-            cs = final_snap.compass_snapshot
-            
-            row = {
-                "event_index": len(events) - 1,
-                "tile_index": tile.get("tile_index", 0),
-                "tile_state": tile.get("tile_state", "NORMAL"),
-                "t_us": tile.get("t_center_us", 0),
-                "has_data": True,
-                "nA": tile.get("nA", 0),
-                "nB": tile.get("nB", 0),
-                "is_pure_stereo": tile.get("is_pure_stereo", False),
-                "cycles_physical": cycles_physical,
-                "compass_global_direction": cs.global_direction if cs else "",
-                "compass_global_score": cs.global_score if cs else 0,
-                "compass_window_direction": cs.window_direction if cs else "",
-                "compass_window_score": cs.window_confidence if cs else 0,
-                "rotor_state": mv.get("rotor_state", "STILL"),
-                "direction_lock_state": mv.get("direction_lock_state", "UNLOCKED"),
-            }
-            for h in headers:
-                if h not in row:
-                    row[h] = mv.get(h, "")
-            rows.append(row)
+    # v1.9 canonical pipeline emits tiles during feed_event(); there is no TilesState.finalize()
+    # and no public tiles_state on RealtimePipeline. Nothing to flush here.
+    final_tiles = []
+
     
     with open(output_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=headers)
@@ -240,89 +212,93 @@ def main():
     print(f"[✓] Wrote {len(rows)} rows to {output_path}")
     
     # Debug summary
-    debug = pipeline.debug_tiles_and_cycles()
-    cycles_debug = debug["cycles"]["per_sensor"]
-    tiles_debug = debug["tiles"]
+    # Optional debug: not available in all pipeline variants
+    if hasattr(pipeline, "debug_tiles_and_cycles"):
+        debug = pipeline.debug_tiles_and_cycles()
+        cycles_debug = debug["cycles"]["per_sensor"]
+        tiles_debug = debug["tiles"]
+
+        print()
+        print(f"=== DEBUG SUMMARY v1.9 ({profile.name}) ===")
+        print(f"Cycles detected:")
+        print(f"  - Sensor A: {cycles_debug['A']['cycles']}")
+        print(f"  - Sensor B: {cycles_debug['B']['cycles']}")
+        print(f"Total cycles_physical: {debug['total_cycles_physical']:.1f}")
+        print()
+
+        print(f"CompassSign v3:")
+        print(f"  - pure_stereo_tiles: {tiles_debug['pure_stereo_tiles']}")
+        print(f"  - deadzone_us: {profile.compass_deadzone_us}")
+        print(f"  - min_tiles: {profile.compass_min_tiles}")
+        print()
+
+        print(f"BootWarmup:")
+        print(f"  - boot_tiles_skipped: {debug['boot_tiles_skipped']}")
+        print(f"  - boot_cycles_skipped: {debug['boot_cycles_skipped']:.1f}")
+        print()
+
+        print(f"Claim at Lock:")
+        print(f"  - cycles_claimed_at_lock: {debug['cycles_claimed_at_lock']:.1f}")
+        print(f"  - cycles_unsigned remaining: {debug['cycles_unsigned']:.1f}")
+        print(f"  - lock_claimed: {debug['lock_claimed']}")
+        print()
     
-    print()
-    print(f"=== DEBUG SUMMARY v1.9 ({profile.name}) ===")
-    print(f"Cycles detected:")
-    print(f"  - Sensor A: {cycles_debug['A']['cycles']}")
-    print(f"  - Sensor B: {cycles_debug['B']['cycles']}")
-    print(f"Total cycles_physical: {debug['total_cycles_physical']:.1f}")
-    print()
-    
-    print(f"CompassSign v3:")
-    print(f"  - pure_stereo_tiles: {tiles_debug['pure_stereo_tiles']}")
-    print(f"  - deadzone_us: {profile.compass_deadzone_us}")
-    print(f"  - min_tiles: {profile.compass_min_tiles}")
-    print()
-    
-    print(f"BootWarmup:")
-    print(f"  - boot_tiles_skipped: {debug['boot_tiles_skipped']}")
-    print(f"  - boot_cycles_skipped: {debug['boot_cycles_skipped']:.1f}")
-    print()
-    
-    print(f"Claim at Lock:")
-    print(f"  - cycles_claimed_at_lock: {debug['cycles_claimed_at_lock']:.1f}")
-    print(f"  - cycles_unsigned remaining: {debug['cycles_unsigned']:.1f}")
-    print(f"  - lock_claimed: {debug['lock_claimed']}")
-    print()
-    
-    final = pipeline.snapshot()
-    mv = final.movement_state
-    print("=== FINAL STATE (v1.9 Hiërarchisch) ===")
-    print(f"Profile: {profile.name}")
-    print(f"RotorState: {mv.get('rotor_state', 'STILL')}")
-    print(f"  └── DirectionLock: {mv.get('direction_lock_state', 'UNLOCKED')}")
-    print(f"       └── Direction: {mv.get('direction_global_effective', 'UNDECIDED')}")
-    print(f"cycle_index: {mv.get('cycle_index', 0):.1f}")
-    print(f"rotations: {mv.get('rotations', 0):.2f}")
-    print(f"theta_deg: {mv.get('theta_deg', 0):.1f}°")
-    print(f"rpm_est: {mv.get('rpm_est', 0):.1f}")
-    print()
-    
-    # State transitions summary
-    if rows:
-        print("=== STATE TRANSITIONS ===")
-        prev_rotor = None
-        prev_lock = None
-        for row in rows:
-            rotor = row.get("rotor_state")
-            lock = row.get("direction_lock_state")
-            tile = row.get("tile_index")
-            
-            if rotor != prev_rotor:
-                print(f"  Tile {tile}: RotorState → {rotor}")
-                prev_rotor = rotor
-            if lock != prev_lock:
-                print(f"  Tile {tile}: DirectionLock → {lock}")
-                prev_lock = lock
-    
-    print()
-    
-    # Verificatie
-    expected_rotations = debug['total_cycles_physical'] / 12.0
-    actual_rotations = abs(mv.get('rotations', 0))
-    direction = mv.get('direction_global_effective', 'UNDECIDED')
-    lock_state = mv.get('direction_lock_state', 'UNLOCKED')
-    rotor_state = mv.get('rotor_state', 'STILL')
-    
-    print("=== VERIFICATIE ===")
-    print(f"Verwacht (fysiek): {expected_rotations:.2f} rotaties")
-    print(f"Gemeten: {mv.get('rotations', 0):.2f} rotaties ({direction})")
-    
-    if lock_state == 'LOCKED':
-        if abs(expected_rotations - actual_rotations) < 0.5:
-            print("✅ LOCKED en rotaties correct!")
+        final = pipeline.snapshot()
+        mv = final.movement_state
+        print("=== FINAL STATE (v1.9 Hiërarchisch) ===")
+        print(f"Profile: {profile.name}")
+        print(f"RotorState: {mv.get('rotor_state', 'STILL')}")
+        print(f"  └── DirectionLock: {mv.get('direction_lock_state', 'UNLOCKED')}")
+        print(f"       └── Direction: {mv.get('direction_global_effective', 'UNDECIDED')}")
+        print(f"cycle_index: {mv.get('cycle_index', 0):.1f}")
+        print(f"rotations: {mv.get('rotations', 0):.2f}")
+        print(f"theta_deg: {mv.get('theta_deg', 0):.1f}°")
+        print(f"rpm_est: {mv.get('rpm_est', 0):.1f}")
+        print()
+
+        # State transitions summary
+        if rows:
+            print("=== STATE TRANSITIONS ===")
+            prev_rotor = None
+            prev_lock = None
+            for row in rows:
+                rotor = row.get("rotor_state")
+                lock = row.get("direction_lock_state")
+                tile = row.get("tile_index")
+
+                if rotor != prev_rotor:
+                    print(f"  Tile {tile}: RotorState → {rotor}")
+                    prev_rotor = rotor
+                if lock != prev_lock:
+                    print(f"  Tile {tile}: DirectionLock → {lock}")
+                    prev_lock = lock
+
+        print()
+
+        # Verificatie
+        expected_rotations = debug['total_cycles_physical'] / 12.0
+        actual_rotations = abs(mv.get('rotations', 0))
+        direction = mv.get('direction_global_effective', 'UNDECIDED')
+        lock_state = mv.get('direction_lock_state', 'UNLOCKED')
+        rotor_state = mv.get('rotor_state', 'STILL')
+
+        print("=== VERIFICATIE ===")
+        print(f"Verwacht (fysiek): {expected_rotations:.2f} rotaties")
+        print(f"Gemeten: {mv.get('rotations', 0):.2f} rotaties ({direction})")
+
+        if lock_state == 'LOCKED':
+            if abs(expected_rotations - actual_rotations) < 0.5:
+                print("✅ LOCKED en rotaties correct!")
+            else:
+                print(f"⚠️ LOCKED maar rotaties verschil: {expected_rotations - actual_rotations:.2f}")
+        elif lock_state == 'SOFT_LOCK':
+            print(f"⚠️ SOFT_LOCK (tentative direction: {direction})")
         else:
-            print(f"⚠️ LOCKED maar rotaties verschil: {expected_rotations - actual_rotations:.2f}")
-    elif lock_state == 'SOFT_LOCK':
-        print(f"⚠️ SOFT_LOCK (tentative direction: {direction})")
+            print(f"⚠️ {lock_state} binnen {rotor_state}")
+            if debug['cycles_unsigned'] > 0:
+                print(f"   cycles_unsigned wacht op lock: {debug['cycles_unsigned']:.1f}")
     else:
-        print(f"⚠️ {lock_state} binnen {rotor_state}")
-        if debug['cycles_unsigned'] > 0:
-            print(f"   cycles_unsigned wacht op lock: {debug['cycles_unsigned']:.1f}")
+        print("[i] debug_tiles_and_cycles: not available (skipped)")
     
     return 0
 
