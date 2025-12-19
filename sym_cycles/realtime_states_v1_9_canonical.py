@@ -30,6 +30,14 @@ POOL_NEU = 0
 POOL_N = 1
 POOL_S = 2
 
+# === Compatibility constants for tooling (replay/scripts) ===
+ROTOR_STATE_STILL = "STILL"
+ROTOR_STATE_MOVEMENT = "MOVEMENT"
+
+LOCK_STATE_UNLOCKED = "UNLOCKED"
+LOCK_STATE_SOFT_LOCK = "SOFT_LOCK"
+LOCK_STATE_LOCKED = "LOCKED"
+
 # === Canonicalization v0.4.2 ===
 
 def canon_event24(ev: Dict[str, Any]) -> Tuple[bool, Dict[str, Any], str]:
