@@ -11,6 +11,11 @@ Changelog v0.4.7c:
 - IMPROVED: "awaiting tile coherence" instead of "⚠ MISMATCH" spam
 - IMPROVED: Clearer "latch_samples_confirmed" label in summary
 - NO BEHAVIOR CHANGE: Only observability/logging improvements
+
+Changelog v0.4.8 (Action Gate integration):
+- NEW: ActionGateV0_1 hook for execution-layer state machine
+- LOGS: Gate decisions logged to JSONL (observability only)
+- NO EXECUTION: Gate does not trigger motor actions
 """
 
 import os, sys, json, time, argparse, struct
@@ -131,6 +136,13 @@ try:
     from sym_cycles.l1_physical_activity import L1PhysicalActivity, L1Config, L1State, L1Snapshot, L1Reason, AwState, INF
 except ImportError:
     from l1_physical_activity import L1PhysicalActivity, L1Config, L1State, L1Snapshot, L1Reason, AwState, INF
+
+# === Action Gate Import (v0.4.8) ===
+try:
+    from sym_cycles.action_gate_v0_1 import ActionGateV0_1, GateInput, GateConfig
+    ACTION_GATE_AVAILABLE = True
+except ImportError:
+    ACTION_GATE_AVAILABLE = False
 
 # === UI ===
 class UI:
@@ -345,6 +357,16 @@ def main():
     MISMATCH_CB_MIN = 8
     mismatch_first_seen_t = None
     mismatch_last_logged_t = 0.0
+
+    # v0.4.8: Action Gate (execution layer, observability only)
+    action_gate = None
+    gate_output = None
+    gate_transitions = 0
+    if ACTION_GATE_AVAILABLE:
+        action_gate = ActionGateV0_1()
+        print(f"[i] Action Gate v0.1 initialized (observability mode)")
+    else:
+        print(f"[i] Action Gate not available (module not found)")
     
     try:
         while True:
@@ -429,6 +451,30 @@ def main():
                 
                 snap = l1.update(wall_time=now, cycles_physical_total=cy_total, events_this_batch=ev_batch,
                                  direction_conf=dc, lock_state=lk, direction_effective=de)
+
+                # --- v0.4.8: Action Gate evaluation (observability only) ---
+                if action_gate is not None:
+                    # Compute data age from last event time
+                    data_age_ms = int((now - t0) * 1000) if ev_batch == 0 else 0
+                    if snap.ageE_s != INF:
+                        data_age_ms = int(snap.ageE_s * 1000)
+
+                    # Build gate input from live pipeline snapshot fields
+                    gate_input = GateInput(
+                        now_ms=int(now * 1000),
+                        coherence_score=dc,  # compass confidence as coherence
+                        lock_state=lk,       # direction_lock_state from L2
+                        data_age_ms=data_age_ms,
+                        rotor_active=(l2_snap.get("rotor_state", "STILL") == "MOVEMENT"),
+                        force_fallback=False,
+                        arm_signal=(lk in ("SOFT_LOCK", "LOCKED")),
+                        activate_signal=(lk == "LOCKED" and dc >= 0.5),
+                    )
+
+                    prev_transitions = action_gate.transition_count
+                    gate_output = action_gate.evaluate(gate_input)
+                    if action_gate.transition_count > prev_transitions:
+                        gate_transitions += 1
 
                 # --- v0.4.5: run-wide tracking ---
                 aw = getattr(snap, "aw_state", None)
@@ -537,6 +583,13 @@ def main():
                             "cycles_in_tiles": cycles_in_tiles_total,
                             "last_tile_index": last_tile_index,
                         },
+                        # v0.4.8: Action Gate (execution layer observability)
+                        "_gate": {
+                            "state": gate_output.state.value if gate_output else None,
+                            "decision": gate_output.decision.value if gate_output else None,
+                            "reason": gate_output.reason if gate_output else None,
+                            "allowed": gate_output.allowed if gate_output else None,
+                        } if gate_output else None,
                     }
                     log_file.write(json.dumps(entry) + "\n")
                 
@@ -629,7 +682,19 @@ def main():
             # v0.4.7c: Clearer label for confirmed counter
             print(f"Latch: episodes={latch_episodes}  dropped={latch_dropped}  latch_samples_confirmed={latch_confirmed}")
         print(f"Origin: candidate_seen={saw_candidate} t_cand={first_candidate_t}  commit_seen={saw_commit} t_commit={first_commit_t}")
-        
+
+        # v0.4.8: Action Gate summary
+        if action_gate is not None:
+            print("-"*70)
+            print("ACTION GATE v0.1 (execution layer observability):")
+            gate_state = action_gate.state.value
+            print(f"  Final state:        {gate_state}")
+            print(f"  Total transitions:  {action_gate.transition_count}")
+            if gate_output:
+                print(f"  Last decision:      {gate_output.decision.value}")
+                print(f"  Last reason:        {gate_output.reason}")
+                print(f"  Action allowed:     {gate_output.allowed}")
+
         print("="*70)
     return 0
 
