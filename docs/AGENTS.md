@@ -12,10 +12,14 @@ Codex is **uitvoerder**, geen architect, geen product-owner, geen canon-bewerker
 * **SoRa Gatekeeper (Lead Dev / Contract-bewaker):** vertaalt SoRa-intentie naar uitvoerbare taken en bewaakt canon.
 * **Codex (Executor):** voert exact uit wat in de *Task Brief* staat, binnen dit contract.
 
+De bouwterrein README beschrijft de feitelijke uitvoercontext; dit contract beschrijft de uitvoergrenzen.
+
 ## 2) Canon en Single Source of Truth
 
 * **SoRa/BIOS/Manifests (canon):** zijn normatief. Codex mag die **niet herinterpreteren** of “verbeteren”.
 * **Repo code:** is de uitvoeringslaag. Codex mag code wijzigen **alleen** om de Task Brief te realiseren.
+
+Contextuele documenten mogen worden gelezen ter begrip, maar niet hergeïnterpreteerd of als basis voor herontwerp gebruikt.
 
 ## 3) Invarianten (altijd waar)
 
