@@ -131,6 +131,73 @@ def decode_flags(flags0, flags1):
         "edge_kind": flags1 & 0x3,
     }
 
+def parse_action_intent(value: str) -> "ActionIntent":
+    if not value:
+        return ActionIntent.INTENT_NONE
+    v = value.strip().upper()
+    if v in ("NONE", "INTENT_NONE", "0"):
+        return ActionIntent.INTENT_NONE
+    if v in ("ACTIVATE", "INTENT_ACTIVATE", "1"):
+        return ActionIntent.INTENT_ACTIVATE
+    if v in ("HOLD", "INTENT_HOLD", "2"):
+        return ActionIntent.INTENT_HOLD
+    if v in ("RELEASE", "INTENT_RELEASE", "3"):
+        return ActionIntent.INTENT_RELEASE
+    return ActionIntent.INTENT_NONE
+
+class IntentInput:
+    def __init__(self, path: str | None, source: str | None):
+        self.path = Path(path) if path else None
+        if source:
+            self.source = source
+        elif self.path:
+            self.source = f"file:{self.path}"
+        else:
+            self.source = "none"
+
+    def read(self) -> tuple["ActionIntent", str]:
+        if not self.path:
+            return (ActionIntent.INTENT_NONE, self.source)
+        try:
+            raw = self.path.read_text(encoding="utf-8")
+        except Exception:
+            return (ActionIntent.INTENT_NONE, self.source)
+        return (parse_action_intent(raw), self.source)
+
+class TimestampedTee:
+    def __init__(self, stream, log_file):
+        self.stream = stream
+        self.log_file = log_file
+        self._pending = ""
+
+    def write(self, data):
+        self.stream.write(data)
+        self.stream.flush()
+        if not self.log_file:
+            return
+        self._pending += data
+        while "\n" in self._pending:
+            line, self._pending = self._pending.split("\n", 1)
+            ts = datetime.now().isoformat(timespec="milliseconds")
+            self.log_file.write(f"{ts} {line}\n")
+        self.log_file.flush()
+
+    def flush(self):
+        self.stream.flush()
+        if self.log_file:
+            self.log_file.flush()
+
+    def drain(self):
+        if self.log_file and self._pending:
+            ts = datetime.now().isoformat(timespec="milliseconds")
+            self.log_file.write(f"{ts} {self._pending}\n")
+            self.log_file.flush()
+            self._pending = ""
+
+class NullStream:
+    def write(self, data): pass
+    def flush(self): pass
+
 # === L1 Import ===
 try:
     from sym_cycles.l1_physical_activity import L1PhysicalActivity, L1Config, L1State, L1Snapshot, L1Reason, AwState, INF
@@ -139,7 +206,7 @@ except ImportError:
 
 # === Action Gate Import (v0.4.8) ===
 try:
-    from sym_cycles.action_gate_v0_1 import ActionGateV0_1, GateInput, GateConfig
+    from sym_cycles.action_gate_v0_2 import ActionGateV0_2, GateInput, GateConfig, ActionIntent
     ACTION_GATE_AVAILABLE = True
 except ImportError:
     ACTION_GATE_AVAILABLE = False
@@ -157,7 +224,7 @@ class UI:
         for _ in range(self.n - len(lines)): print(self.CLR)
     def cleanup(self): print(self.SHOW, end='')
 
-def fmt_display(s, l2, eps, elapsed):
+def fmt_display(s, l2, eps, elapsed, gate_info=None):
     u = UI
     aw = s.aw_state.value
     aw_r = s.aw_reason.value
@@ -205,7 +272,20 @@ def fmt_display(s, l2, eps, elapsed):
     pool_col = u.G if s.pool_valid_rate_win >= 0.7 else (u.Y if s.pool_valid_rate_win >= 0.4 else u.D)
     lines.append(f"  {u.B}POOL win:{u.R} chg={s.pool_changes_win}  uniq={{{uniq_str}}}  "
                  f"{pool_col}valid={s.pool_valid_rate_win*100:.0f}%{u.R}")
-    
+
+    # Gate (v0.2) — display only existing fields
+    gi = gate_info or {}
+    g_state = gi.get("state", "-")
+    g_decision = gi.get("decision", "-")
+    g_intent = gi.get("intent", "-")
+    g_trans = gi.get("transitions", 0)
+    g_coh = gi.get("coherence", 0.0)
+    g_lock = gi.get("lock", "-")
+    g_rotor = gi.get("rotor", "-")
+    g_age = gi.get("data_age_ms", 0)
+    lines.append(f"  {u.B}GATE:{u.R} state={g_state} decision={g_decision} intent={g_intent} trans={g_trans}")
+    lines.append(f"       coherence={g_coh:.2f} lock={g_lock} rotor={g_rotor} data_age_ms={g_age}")
+
     # Candidate (V0.4)
     if s.origin_candidate_set:
         lines.append(f"  {u.C}CAND:{u.R} t0={s.origin_candidate_time_s:.2f}s  "
@@ -267,7 +347,55 @@ def main():
     ap.add_argument('--log', '-l', action='store_true')
     ap.add_argument('--simple', '-s', action='store_true')
     ap.add_argument('--scoreboard', action='store_true')
+    ap.add_argument('--scoreboard-hz', type=float, default=2.0,
+                    help='Scoreboard refresh rate in Hz (default: 2.0)')
+    ap.add_argument('--quiet-console', action='store_true',
+                    help='Suppress non-scoreboard stdout output')
+    ap.add_argument('--intent-file', default=None,
+                    help='Path to file with ActionIntent value (per tick)')
+    ap.add_argument('--intent-source', default=None,
+                    help='ActionIntent source label (defaults to file:PATH)')
+    ap.add_argument('--gate-log', action='store_true',
+                    help='Print Action Gate v0.2 log entries')
+    ap.add_argument('--log-file', default=None,
+                    help='Write all console output to a timestamped log file')
+    ap.add_argument('--log-dir', nargs='?', const='testbench/out', default=None,
+                    help='Directory for timestamped log files (default: testbench/out)')
+    ap.add_argument('--gate-smoke', action='store_true',
+                    help='Run Action Gate smoke loop without ESP')
+    ap.add_argument('--gate-smoke-ticks', type=int, default=20,
+                    help='Ticks for --gate-smoke')
+    ap.add_argument('--gate-smoke-interval-ms', type=int, default=100,
+                    help='Tick interval for --gate-smoke')
     args = ap.parse_args()
+
+    log_fh = None
+    tee_out = None
+    tee_err = None
+    orig_stdout = sys.stdout
+    orig_stderr = sys.stderr
+    log_requested = bool(args.log_file or args.log_dir)
+    stdout_stream = orig_stdout if not args.quiet_console else NullStream()
+    if log_requested:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if args.log_file:
+            log_path = Path(args.log_file)
+        else:
+            log_dir = Path(args.log_dir)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / f"live_symphonia_{ts}.log"
+        log_fh = open(log_path, "w", encoding="utf-8")
+        tee_out = TimestampedTee(stdout_stream, log_fh)
+        tee_err = TimestampedTee(sys.stderr, log_fh)
+        sys.stdout = tee_out
+        sys.stderr = tee_err
+        print(f"[i] Console log file: {log_path}")
+    elif args.quiet_console:
+        sys.stdout = stdout_stream
+
+    scoreboard_stream = sys.stdout
+    if args.quiet_console:
+        scoreboard_stream = TimestampedTee(orig_stdout, log_fh) if log_fh else orig_stdout
 
     # --- v0.4.5a run-wide summary semantics ---
     saw_pre_movement = False
@@ -288,8 +416,65 @@ def main():
     latch_dropped = 0
     latch_confirmed = 0
     
+    gate_log_enabled = args.gate_log or log_requested
+    if args.gate_smoke:
+        if not ACTION_GATE_AVAILABLE:
+            print("[i] Action Gate not available (module not found)")
+            if tee_out:
+                tee_out.drain()
+            if tee_err:
+                tee_err.drain()
+            if log_fh:
+                log_fh.close()
+            sys.stdout = orig_stdout
+            sys.stderr = orig_stderr
+            return 1
+        action_gate = ActionGateV0_2()
+        intent_input = IntentInput(args.intent_file, args.intent_source)
+        print(f"[i] Action Gate v{ActionGateV0_2.VERSION} initialized (smoke mode)")
+        for _ in range(args.gate_smoke_ticks):
+            now = time.time()
+            intent, intent_source = intent_input.read()
+            gate_input = GateInput(
+                now_ms=int(now * 1000),
+                coherence_score=0.9,
+                lock_state="LOCKED",
+                data_age_ms=0,
+                rotor_active=False,
+                force_fallback=False,
+                arm_signal=True,
+                activate_signal=True,
+                action_intent=intent,
+                intent_source=intent_source,
+            )
+            gate_output = action_gate.evaluate(gate_input)
+            if gate_log_enabled:
+                for entry in gate_output.log_entries:
+                    print(entry)
+            time.sleep(args.gate_smoke_interval_ms / 1000.0)
+        print(f"[i] Gate smoke done; transitions={action_gate.transition_count}")
+        if tee_out:
+            tee_out.drain()
+        if tee_err:
+            tee_err.drain()
+        if log_fh:
+            log_fh.close()
+        sys.stdout = orig_stdout
+        sys.stderr = orig_stderr
+        return 0
+
     try: import serial
-    except: print("❌ pyserial!"); return 1
+    except:
+        print("❌ pyserial!")
+        if tee_out:
+            tee_out.drain()
+        if tee_err:
+            tee_err.drain()
+        if log_fh:
+            log_fh.close()
+        sys.stdout = orig_stdout
+        sys.stderr = orig_stderr
+        return 1
     
     try:
         from sym_cycles.realtime_states_v1_9_canonical import RealtimePipeline, PROFILE_PRODUCTION, PROFILE_BENCH, PROFILE_BENCH_TOLERANT
@@ -325,7 +510,7 @@ def main():
         lp = f"live_origin_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
         log_file = open(lp, 'w'); print(f"[i] Log: {lp}")
     
-    ui = None if args.simple or args.scoreboard else UI(32)
+    ui = None if args.simple or args.scoreboard or args.quiet_console else UI(32)
     print(f"[i] Profile: {l2_prof.name}, origin_step={args.origin_step}°, pool_win={args.pool_win_ms}ms")
     print("[i] Running...")
     if ui: ui.init()
@@ -357,14 +542,28 @@ def main():
     MISMATCH_CB_MIN = 8
     mismatch_first_seen_t = None
     mismatch_last_logged_t = 0.0
+    last_scoreboard_t = 0.0
+    scoreboard_interval_s = 1.0 / args.scoreboard_hz if args.scoreboard_hz > 0 else 0.5
 
     # v0.4.8: Action Gate (execution layer, observability only)
     action_gate = None
     gate_output = None
     gate_transitions = 0
+    intent_input = None
+    gate_info = {
+        "state": "-",
+        "decision": "-",
+        "intent": ActionIntent.INTENT_NONE.value if ACTION_GATE_AVAILABLE else "-",
+        "transitions": 0,
+        "coherence": 0.0,
+        "lock": "-",
+        "rotor": "-",
+        "data_age_ms": 0,
+    }
     if ACTION_GATE_AVAILABLE:
-        action_gate = ActionGateV0_1()
-        print(f"[i] Action Gate v0.1 initialized (observability mode)")
+        action_gate = ActionGateV0_2()
+        intent_input = IntentInput(args.intent_file, args.intent_source)
+        print(f"[i] Action Gate v{ActionGateV0_2.VERSION} initialized (observability mode)")
     else:
         print(f"[i] Action Gate not available (module not found)")
     
@@ -459,6 +658,11 @@ def main():
                     if snap.ageE_s != INF:
                         data_age_ms = int(snap.ageE_s * 1000)
 
+                    intent = ActionIntent.INTENT_NONE
+                    intent_source = "none"
+                    if intent_input is not None:
+                        intent, intent_source = intent_input.read()
+
                     # Build gate input from live pipeline snapshot fields
                     gate_input = GateInput(
                         now_ms=int(now * 1000),
@@ -469,12 +673,28 @@ def main():
                         force_fallback=False,
                         arm_signal=(lk in ("SOFT_LOCK", "LOCKED")),
                         activate_signal=(lk == "LOCKED" and dc >= 0.5),
+                        action_intent=intent,
+                        intent_source=intent_source,
                     )
 
                     prev_transitions = action_gate.transition_count
                     gate_output = action_gate.evaluate(gate_input)
                     if action_gate.transition_count > prev_transitions:
                         gate_transitions += 1
+                    if gate_log_enabled and gate_output:
+                        for entry in gate_output.log_entries:
+                            print(entry)
+                    if gate_output:
+                        gate_info.update({
+                            "state": gate_output.state.value,
+                            "decision": gate_output.decision.value,
+                            "intent": intent.value,
+                            "transitions": action_gate.transition_count,
+                            "coherence": dc,
+                            "lock": lk,
+                            "rotor": l2_snap.get("rotor_state", "STILL"),
+                            "data_age_ms": data_age_ms,
+                        })
 
                 # --- v0.4.5: run-wide tracking ---
                 aw = getattr(snap, "aw_state", None)
@@ -593,7 +813,8 @@ def main():
                     }
                     log_file.write(json.dumps(entry) + "\n")
                 
-                if args.scoreboard:
+                if args.scoreboard and (now - last_scoreboard_t >= scoreboard_interval_s):
+                    last_scoreboard_t = now
                     aw = snap.aw_state.value
                     cand = "C" if snap.origin_candidate_set else "-"
                     comm = "O" if snap.origin_commit_set else "-"
@@ -619,17 +840,26 @@ def main():
                         mismatch_last_logged_t = now
                     
                     print(f"{aw:12} {snap.aw_reason.value:24} cand={cand} comm={comm} "
-                          f"[{mode}] μ={snap.mdi_disp_micro_deg:4.0f}° ev={ev_win} latch={latch}{conf_stat} {stale}")
-                    print(f"  CycleTruth: used={cy_total:.0f} cb={cb_cycles_total} src={cycles_source_key} {coherence_status}")
+                          f"[{mode}] μ={snap.mdi_disp_micro_deg:4.0f}° ev={ev_win} latch={latch}{conf_stat} {stale}",
+                          file=scoreboard_stream)
+                    print(f"  CycleTruth: used={cy_total:.0f} cb={cb_cycles_total} src={cycles_source_key} {coherence_status}",
+                          file=scoreboard_stream)
                     
                     # v0.4.7c: Tile flow metrics
                     tile_idx_str = str(last_tile_index) if last_tile_index is not None else "-"
                     print(f"  Flow: tiles={tiles_emitted_total} w/cycles={tiles_with_cycles_total} "
-                          f"cycles_in_tiles={cycles_in_tiles_total:.1f} last_tile={tile_idx_str}")
+                          f"cycles_in_tiles={cycles_in_tiles_total:.1f} last_tile={tile_idx_str}",
+                          file=scoreboard_stream)
+                    print(f"  Gate: state={gate_info['state']} decision={gate_info['decision']} "
+                          f"intent={gate_info['intent']} trans={gate_info['transitions']}",
+                          file=scoreboard_stream)
+                    print(f"  GateBasis: coherence={gate_info['coherence']:.2f} lock={gate_info['lock']} "
+                          f"rotor={gate_info['rotor']} data_age_ms={gate_info['data_age_ms']}",
+                          file=scoreboard_stream)
             
             if ui and now - last_disp > 0.1:
                 eps = len([t for t in events_win if now - t < 1.0])
-                ui.update(fmt_display(snap, l2_snap, eps, elapsed))
+                ui.update(fmt_display(snap, l2_snap, eps, elapsed, gate_info))
                 last_disp = now
             elif args.simple and now - last_disp > 0.1:
                 stale = "[S]" if snap.l2_stale else ""
@@ -644,6 +874,14 @@ def main():
         if ui: ui.cleanup()
         ser.close()
         if log_file: log_file.close()
+        if tee_out:
+            tee_out.drain()
+        if tee_err:
+            tee_err.drain()
+        if log_fh:
+            log_fh.close()
+        sys.stdout = orig_stdout
+        sys.stderr = orig_stderr
         
         # === SUMMARY v0.4.7c ===
         print(f"\n{'='*70}")
@@ -686,7 +924,7 @@ def main():
         # v0.4.8: Action Gate summary
         if action_gate is not None:
             print("-"*70)
-            print("ACTION GATE v0.1 (execution layer observability):")
+            print(f"ACTION GATE v{ActionGateV0_2.VERSION} (execution layer observability):")
             gate_state = action_gate.state.value
             print(f"  Final state:        {gate_state}")
             print(f"  Total transitions:  {action_gate.transition_count}")

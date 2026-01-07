@@ -93,15 +93,18 @@ Codex stelt dan een “Options A/B/C” voor met impact en vraagt de Gatekeeper 
 
 ## 10) Dev-only addendum
 
-- This repository is a Codex development sandbox.
-- Codex MUST NOT:
-  - access or modify any staging directories
-  - run sync2.sh or rsync outside this repo
-  - change git remotes or push without explicit instruction
-- All changes are development-only until manually promoted to staging by Ralph.
+- Deze repository is een Codex development sandbox.
+- Alle wijzigingen zijn development-only tot manueel gepromoot naar staging door Ralph.
+
+## 11) Taal & Communicatie
+
+- Alle communicatie MOET in Nederlands/Dutch (nl-NL).
+- Code commentaar mag in English als conventioneel of extern-gericht.
+- UI uitleg, samenvatting, redenering en vragen moeten in het Nederlands.
+- Als een externe tool of API in het Engels antwoord, vertaal de uitleg naar Nederlands
 
 
-## 11) Contractversie
+## 12) Contractversie
 
 Dit contract is v1.0. Wijzigingen aan dit contract mogen alleen via:
 
